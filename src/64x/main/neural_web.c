@@ -1225,28 +1225,23 @@ void addWeightedVector(float *target, const float *source, float weight,
 WorkingMemorySystem *createWorkingMemorySystem(unsigned int capacity) {
   WorkingMemorySystem *system = malloc(sizeof(WorkingMemorySystem));
 
-  // Initialize focused attention component
-  system->focus.capacity = capacity * 0.2; // 20% for focused attention
+  system->focus.capacity = capacity * 0.2;
   system->focus.entries =
-      malloc(system->focus.capacity * sizeof(WorkingMemoryEntry));
+      calloc(system->focus.capacity, sizeof(WorkingMemoryEntry));
   system->focus.size = 0;
   system->focus.attention_threshold = 0.8f;
 
-  // Initialize active working memory
-  system->active.capacity = capacity * 0.8; // 80% for active memory
+  system->active.capacity = capacity * 0.8;
   system->active.entries =
-      malloc(system->active.capacity * sizeof(WorkingMemoryEntry));
+      calloc(system->active.capacity, sizeof(WorkingMemoryEntry));
   system->active.size = 0;
   system->active.activation_decay = 0.95f;
 
-  // Initialize dynamic clustering
-  system->clusters.num_clusters = 5; // Start with 5 clusters
+  system->clusters.num_clusters = 5;
   system->clusters.clusters =
-      malloc(system->clusters.num_clusters * sizeof(SemanticCluster));
+      calloc(system->clusters.num_clusters, sizeof(SemanticCluster));
 
-  // Initialize global context
   system->global_context = calloc(CONTEXT_VECTOR_SIZE, sizeof(float));
-
   return system;
 }
 
@@ -1667,7 +1662,18 @@ void saveMemorySystem(MemorySystem *system, const char *filename) {
   fwrite(&system->capacity, sizeof(unsigned int), 1, fp);
   fwrite(&system->size, sizeof(unsigned int), 1, fp);
   fwrite(&system->head, sizeof(unsigned int), 1, fp);
-  fwrite(system->entries, sizeof(MemoryEntry), system->capacity, fp);
+
+  fwrite(&system->hierarchy.short_term.size, sizeof(unsigned int), 1, fp);
+  fwrite(system->hierarchy.short_term.entries, sizeof(MemoryEntry),
+         system->hierarchy.short_term.capacity, fp);
+
+  fwrite(&system->hierarchy.medium_term.size, sizeof(unsigned int), 1, fp);
+  fwrite(system->hierarchy.medium_term.entries, sizeof(MemoryEntry),
+         system->hierarchy.medium_term.capacity, fp);
+
+  fwrite(&system->hierarchy.long_term.size, sizeof(unsigned int), 1, fp);
+  fwrite(system->hierarchy.long_term.entries, sizeof(MemoryEntry),
+         system->hierarchy.long_term.capacity, fp);
 
   fclose(fp);
 }
@@ -1680,12 +1686,44 @@ MemorySystem *loadMemorySystem(const char *filename) {
   }
 
   unsigned int capacity;
-  fread(&capacity, sizeof(unsigned int), 1, fp);
+  if (fread(&capacity, sizeof(unsigned int), 1, fp) != 1) {
+    fclose(fp);
+    return NULL;
+  }
 
   MemorySystem *system = createMemorySystem(capacity);
-  fread(&system->size, sizeof(unsigned int), 1, fp);
-  fread(&system->head, sizeof(unsigned int), 1, fp);
-  fread(system->entries, sizeof(MemoryEntry), capacity, fp);
+  if (system == NULL) {
+    fclose(fp);
+    return NULL;
+  }
+
+  if (fread(&system->size, sizeof(unsigned int), 1, fp) != 1 ||
+      fread(&system->head, sizeof(unsigned int), 1, fp) != 1) {
+    freeMemorySystem(system);
+    fclose(fp);
+    return NULL;
+  }
+
+  unsigned int st_cap = system->hierarchy.short_term.capacity;
+  unsigned int mt_cap = system->hierarchy.medium_term.capacity;
+  unsigned int lt_cap = system->hierarchy.long_term.capacity;
+
+  if (fread(&system->hierarchy.short_term.size, sizeof(unsigned int), 1, fp) !=
+          1 ||
+      fread(system->hierarchy.short_term.entries, sizeof(MemoryEntry), st_cap,
+            fp) != st_cap ||
+      fread(&system->hierarchy.medium_term.size, sizeof(unsigned int), 1, fp) !=
+          1 ||
+      fread(system->hierarchy.medium_term.entries, sizeof(MemoryEntry), mt_cap,
+            fp) != mt_cap ||
+      fread(&system->hierarchy.long_term.size, sizeof(unsigned int), 1, fp) !=
+          1 ||
+      fread(system->hierarchy.long_term.entries, sizeof(MemoryEntry), lt_cap,
+            fp) != lt_cap) {
+    freeMemorySystem(system);
+    fclose(fp);
+    return NULL;
+  }
 
   fclose(fp);
   return system;
@@ -5533,7 +5571,7 @@ void updateGlobalContext(GlobalContextManager *manager, Neuron *neurons,
 void integrateGlobalContext(GlobalContextManager *manager, Neuron *neurons,
                             uint32_t num_neurons, float *weights,
                             uint32_t max_connections) {
-  // Compute network-wide entropy as a measure of state variability
+
   float total_entropy = 0.0f;
   for (uint32_t i = 0; i < num_neurons; i++) {
     total_entropy += fabs(neurons[i].output);
@@ -5543,15 +5581,14 @@ void integrateGlobalContext(GlobalContextManager *manager, Neuron *neurons,
 
   // Modulate neuron behavior based on global context
   for (uint32_t i = 0; i < num_neurons; i++) {
-    float context_influence = 0;
-
-    // Compute context influence on this neuron
-    for (uint32_t j = 0; j < manager->vector_size && j < num_neurons; j++) {
-      context_influence +=
-          manager->global_context_vector[j] * weights[i * max_connections + j];
+    float context_influence = 0.0f;
+    uint32_t limit = manager->vector_size < max_connections
+                         ? manager->vector_size
+                         : max_connections;
+    for (uint32_t j = 0; j < limit; j++) {
+      uint32_t idx = i * max_connections + j;
+      context_influence += manager->global_context_vector[j] * weights[idx];
     }
-
-    // Adaptive context modulation with sensitivity
     float modulation_factor = 0.1f * context_influence * context_sensitivity;
     neurons[i].state = neurons[i].state * (1.0f + modulation_factor);
     neurons[i].output = tanh(neurons[i].state);
@@ -6708,20 +6745,22 @@ void initializeIdentityComponents(SelfIdentitySystem *system) {
   if (!system)
     return;
 
-  // Initialize core values with small random values
   for (uint32_t i = 0; i < system->num_core_values; i++) {
     system->core_values[i] = 0.1f + (float)rand() / RAND_MAX * 0.2f;
   }
 
-  // Initialize identity markers with small random values
   for (uint32_t i = 0; i < system->num_markers; i++) {
     system->identity_markers[i] = 0.1f + (float)rand() / RAND_MAX * 0.2f;
   }
 
-  // Initialize belief system with small random values
   for (uint32_t i = 0; i < system->num_beliefs; i++) {
     system->belief_system[i] = 0.1f + (float)rand() / RAND_MAX * 0.2f;
   }
+
+  float *initial_state = getCurrentIdentityState(system);
+  memcpy(system->verification.reference_state, initial_state,
+         system->verification.state_size * sizeof(float));
+  free(initial_state);
 }
 
 float *getCurrentIdentityState(SelfIdentitySystem *system) {
@@ -6808,17 +6847,20 @@ void updateCoreValues(SelfIdentitySystem *system, float *current_patterns,
   }
 }
 
-void updateReferenceStates(SelfIdentitySystem *system, float *current_state) {
+void updateReferenceStates(SelfIdentitySystem *system) {
+  float *current_state = getCurrentIdentityState(system);
+
   for (uint32_t i = 0; i < system->verification.state_size; i++) {
     system->verification.reference_state[i] =
         (1.0f - system->adaptation_rate) *
             system->verification.reference_state[i] +
         system->adaptation_rate * current_state[i];
 
-    // Clamp the value to a reasonable range
     system->verification.reference_state[i] =
         clampValue(system->verification.reference_state[i]);
   }
+
+  free(current_state);
 }
 
 // Compute experience value using weighted encoding
@@ -7062,10 +7104,9 @@ void updateIdentity(SelfIdentitySystem *system, Neuron *neurons,
 
   // Calculate pattern consistency
   float pattern_consistency = computePatternConsistency(
-      system->behavioral_patterns, current_patterns, system->pattern_size);
+      system->behavioral_patterns, current_patterns, PATTERN_SIZE);
 
-  // Update behavioral patterns with temporal smoothing
-  for (uint32_t i = 0; i < system->pattern_size; i++) {
+  for (uint32_t i = 0; i < PATTERN_SIZE; i++) {
     system->behavioral_patterns[i] =
         (1 - system->adaptation_rate) * system->behavioral_patterns[i] +
         system->adaptation_rate * current_patterns[i];
@@ -7073,7 +7114,7 @@ void updateIdentity(SelfIdentitySystem *system, Neuron *neurons,
   // Update core values based on consistent behaviors
   updateCoreValues(system, current_patterns, pattern_consistency);
 
-  updateReferenceStates(system, current_input);
+  updateReferenceStates(system);
 
   // Integrate new experiences
   float *experience_vector =
@@ -7108,20 +7149,25 @@ void printArray(const char *name, float *array, uint32_t size) {
 
 bool verifyIdentity(SelfIdentitySystem *system) {
   float *current_state = getCurrentIdentityState(system);
+
   for (uint32_t i = 0; i < system->verification.state_size; i++) {
     current_state[i] = clampValue(current_state[i]);
   }
+
   float consistency = computeStateConsistency(
       current_state, system->verification.reference_state,
       system->verification.state_size);
 
-  bool verified = consistency >= system->verification.threshold;
+  float effective_threshold = system->verification.threshold *
+                              fminf(1.0f, system->consistency_score + 0.2f);
+
+  bool verified = consistency >= effective_threshold;
 
   if (verified) {
     // Update reference state with slight adaptation
-    for (int i = 0; i < system->verification.state_size; i++) {
+    for (uint32_t i = 0; i < system->verification.state_size; i++) {
       system->verification.reference_state[i] =
-          (1 - system->adaptation_rate) *
+          (1.0f - system->adaptation_rate) *
               system->verification.reference_state[i] +
           system->adaptation_rate * current_state[i];
     }
@@ -7224,26 +7270,24 @@ void updateCategorySimilarityMatrix(KnowledgeFilter *filter) {
 KnowledgeCategory *categorizeInput(KnowledgeFilter *filter, float *input_vector,
                                    float threshold) {
   KnowledgeCategory *best_match = NULL;
-  float best_similarity = threshold;
+  float best_similarity = -1.0f;
+  uint32_t best_index = 0;
 
   for (uint32_t i = 0; i < filter->num_categories; i++) {
-    // Check if feature vector contains any NaN values
     bool has_nan = false;
     for (int j = 0; j < FEATURE_VECTOR_SIZE; j++) {
       if (isnan(filter->categories[i].feature_vector[j])) {
-        filter->categories[i].feature_vector[j] = 0.0f; // Fix NaN values
+        filter->categories[i].feature_vector[j] = 0.0f;
         has_nan = true;
       }
     }
 
-    // If NaN values were detected, normalize the vector
     if (has_nan) {
       float sum = 0.0f;
       for (int j = 0; j < FEATURE_VECTOR_SIZE; j++) {
         sum += filter->categories[i].feature_vector[j] *
                filter->categories[i].feature_vector[j];
       }
-
       if (sum > 0.0f) {
         float norm = sqrt(sum);
         for (int j = 0; j < FEATURE_VECTOR_SIZE; j++) {
@@ -7255,30 +7299,32 @@ KnowledgeCategory *categorizeInput(KnowledgeFilter *filter, float *input_vector,
     float similarity = computeCategorySimilarity(
         input_vector, filter->categories[i].feature_vector);
 
-    // Skip if similarity calculation resulted in NaN
-    if (isnan(similarity)) {
+    if (isnan(similarity))
       continue;
-    }
 
     if (similarity > best_similarity) {
       best_similarity = similarity;
       best_match = &filter->categories[i];
+      best_index = i;
     }
   }
 
-  if (best_match) {
-    // Update usage statistics
+  // We start now at -1.0f to always find the best candidate then we
+  // differentiate and pick the best match.
+
+  bool cold_start = best_similarity < 1e-6f;
+
+  if (best_match && (best_similarity >= threshold || cold_start)) {
     best_match->usage_count++;
     best_match->last_accessed = time(NULL);
 
-    // Update confidence based on similarity score with safety check
-    float new_confidence =
-        (best_match->confidence * 0.9f + best_similarity * 0.1f);
+    float effective_sim = cold_start ? 0.5f : best_similarity;
+
+    float new_confidence = best_match->confidence * 0.9f + effective_sim * 0.1f;
     best_match->confidence = isnan(new_confidence)
                                  ? best_match->confidence
                                  : fmax(0.0f, fmin(1.0f, new_confidence));
 
-    // Adjust importance based on usage and confidence with safety check
     float usage_factor =
         fmin(1.0f, (float)best_match->usage_count / (float)MAX_USAGE_COUNT);
     float new_importance = usage_factor * 0.5f + best_match->confidence * 0.5f;
@@ -7287,6 +7333,7 @@ KnowledgeCategory *categorizeInput(KnowledgeFilter *filter, float *input_vector,
                                  : fmax(0.0f, fmin(1.0f, new_importance));
   } else {
     printf("\nNo category matched above threshold (%.2f)\n", threshold);
+    best_match = NULL;
   }
 
   return best_match;
@@ -7509,24 +7556,19 @@ void strengthenMemory(MemorySystem *memory_system, uint32_t index) {
 void integrateKnowledgeFilter(KnowledgeFilter *filter,
                               MemorySystem *memory_system, Neuron *neurons,
                               float *input_tensor) {
-  // Extract feature vector from current network state
   float *current_features = extractFeatureVector(neurons, input_tensor);
 
-  // Check for NaN values in feature vector
   for (int i = 0; i < FEATURE_VECTOR_SIZE; i++) {
     if (isnan(current_features[i])) {
-      current_features[i] = 0.0f; // Replace NaN with 0
+      current_features[i] = 0.0f;
     }
   }
 
-  // Categorize current input
   KnowledgeCategory *category = categorizeInput(filter, current_features, 0.7f);
 
   if (category) {
-    // Get category statistics including success rate
     CategoryStatistics stats = analyzeCategory(filter, category);
 
-    // Ensure stats values are valid
     if (isnan(stats.avg_success_rate))
       stats.avg_success_rate = 0.5f;
     stats.avg_success_rate = fmax(0.0f, fmin(1.0f, stats.avg_success_rate));
@@ -7535,15 +7577,13 @@ void integrateKnowledgeFilter(KnowledgeFilter *filter,
       stats.avg_difficulty = 0.5f;
     stats.avg_difficulty = fmax(0.0f, fmin(1.0f, stats.avg_difficulty));
 
-    // Update category confidence with clamping to prevent NaN propagation
     float new_confidence =
         category->confidence * 0.8f + stats.avg_success_rate * 0.2f;
     category->confidence =
         isnan(new_confidence) ? 0.5f : fmax(0.0f, fmin(1.0f, new_confidence));
 
-    // Update importance based on multiple factors with safety checks
     float usage_factor = (float)category->usage_count / MAX_USAGE_COUNT;
-    usage_factor = fmax(0.0f, fmin(1.0f, usage_factor)); // Clamp to [0,1]
+    usage_factor = fmax(0.0f, fmin(1.0f, usage_factor));
 
     float difficulty_factor = stats.avg_difficulty;
     float success_factor = stats.avg_success_rate;
@@ -7553,13 +7593,17 @@ void integrateKnowledgeFilter(KnowledgeFilter *filter,
     category->importance =
         isnan(new_importance) ? 0.5f : fmax(0.0f, fmin(1.0f, new_importance));
 
-    // Update feature vector with new information and check for NaNs
     for (int i = 0; i < FEATURE_VECTOR_SIZE; i++) {
       float new_value =
           category->feature_vector[i] * 0.9f + current_features[i] * 0.1f;
       category->feature_vector[i] =
           isnan(new_value) ? category->feature_vector[i] : new_value;
     }
+
+    // Record this as a problem instance so usage history grows
+    recordProblemInstance(filter, category->name, current_features,
+                          stats.avg_difficulty, stats.avg_success_rate,
+                          category);
   }
 
   free(current_features);
@@ -7582,81 +7626,69 @@ void printCategoryInsights(KnowledgeFilter *filter) {
 }
 
 void updateKnowledgeSystem(Neuron *neurons, float *input_tensor,
-                           MemorySystem *memory_system, KnowledgeFilter *filter,
-                           float current_performance) {
-  // Check and sanitize current_performance
-  if (isnan(current_performance)) {
-    current_performance = 0.5f; // Default to neutral performance
-  }
-  current_performance = fmax(0.0f, fmin(1.0f, current_performance));
-
-  // Check neurons for NaN values and repair them
+                           MemorySystem *memory_system,
+                           KnowledgeFilter *filter) {
   for (int i = 0; i < MAX_NEURONS; i++) {
     if (isnan(neurons[i].output)) {
-      neurons[i].output = 0.0f; // Reset NaN neurons
+      neurons[i].output = 0.0f;
     }
   }
 
-  // Integrate knowledge filter with current network state
   integrateKnowledgeFilter(filter, memory_system, neurons, input_tensor);
 
-  // Extract feature vector for problem instance
   float *feature_vector = extractFeatureVector(neurons, input_tensor);
-
-  // Check for NaN values in feature vector
   for (int i = 0; i < FEATURE_VECTOR_SIZE; i++) {
     if (isnan(feature_vector[i])) {
       feature_vector[i] = 0.0f;
     }
   }
 
-  // Categorize current input
+  int active_neurons = 0;
+  int strong_neurons = 0;
+  float difficulty = 0.0f;
+
+  for (int i = 0; i < MAX_NEURONS; i++) {
+    float out = neurons[i].output;
+    if (out > 0.5f)
+      active_neurons++;
+    if (out > 0.8f) {
+      strong_neurons++;
+      difficulty += 0.1f;
+    }
+  }
+
+  if (active_neurons > 0) {
+    difficulty = fmin(1.0f, difficulty / fmax(10.0f, (float)active_neurons));
+  } else {
+    difficulty = 0.5f;
+  }
+
+  float success_rate =
+      (active_neurons > 0)
+          ? fmin(1.0f, (float)strong_neurons / (float)active_neurons)
+          : 0.5f;
+
   KnowledgeCategory *category = categorizeInput(filter, feature_vector, 0.7f);
 
   if (category) {
-    // Record this as a problem instance
     char description[256];
     snprintf(description, sizeof(description),
-             "Network state analysis at performance level %.2f",
-             current_performance);
+             "Network state: %d active neurons, %.2f difficulty",
+             active_neurons, difficulty);
 
-    // Calculate difficulty based on neuron activation patterns with safety
-    // check
-    float difficulty = 0.0f;
-    int active_neurons = 0;
-    for (int i = 0; i < MAX_NEURONS; i++) {
-      if (neurons[i].output > 0.8f) {
-        difficulty += 0.1f;
-        active_neurons++;
-      }
-    }
-
-    // Scale difficulty by active neurons to prevent unbounded growth
-    if (active_neurons > 0) {
-      difficulty = fmin(1.0f, difficulty / fmax(10.0f, (float)active_neurons));
-    } else {
-      difficulty = 0.5f; // Default difficulty
-    }
-
-    // Record the problem instance
     recordProblemInstance(filter, description, feature_vector, difficulty,
-                          current_performance, category);
+                          success_rate, category);
 
-    // Update category usage statistics
     category->usage_count++;
     category->last_accessed = time(NULL);
 
-    // Update confidence based on performance with safety check
-    float new_confidence =
-        category->confidence * 0.9f + current_performance * 0.1f;
+    float new_confidence = category->confidence * 0.9f + success_rate * 0.1f;
     category->confidence = isnan(new_confidence)
                                ? category->confidence
                                : fmax(0.0f, fmin(1.0f, new_confidence));
 
-    // Update importance based on multiple factors
     CategoryStatistics stats = analyzeCategory(filter, category);
 
-    // Ensure stats are valid
     if (isnan(stats.avg_difficulty))
       stats.avg_difficulty = 0.5f;
 
@@ -7676,9 +7708,8 @@ void updateKnowledgeSystem(Neuron *neurons, float *input_tensor,
 
   free(feature_vector);
 
-  // Periodically update similarity matrix
   static time_t last_matrix_update = 0;
-  if (time(NULL) - last_matrix_update > 3600) { // Update every hour
+  if (time(NULL) - last_matrix_update > 3600) {
     updateCategorySimilarityMatrix(filter);
     last_matrix_update = time(NULL);
   }
