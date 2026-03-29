@@ -1,4 +1,4 @@
-#include "include/definitions.h"
+#include "../include/definitions.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <Foundation/Foundation.h>
 #include <Metal/Metal.h>
