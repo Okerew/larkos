@@ -3121,6 +3121,10 @@ void decayMemorySystem(MemorySystem *system) {
   removeDecayedMemories(system);
 }
 
+/*
+ * NOTE: Lines here are specific to OSX
+ */
+
 // Function to apply element-wise tanh using SIMD
 simd_float4 simd_tanh(simd_float4 input) {
   simd_float4 result;
@@ -3349,6 +3353,9 @@ void processNeurons(Neuron *neurons, int num_neurons, float *weights,
   }
   free(attention_weights);
 }
+/*
+ * NOTE: End of specific lines to OSX
+ */
 
 // Function to measure execution time
 double getCurrentTime() {
@@ -3591,7 +3598,6 @@ SystemParameters *loadSystemParameters(const char *filename) {
   return params;
 }
 
-// Structure for analysis results
 typedef struct {
   float avg_execution_time;
   float avg_average_output;
@@ -8678,6 +8684,11 @@ void getEmotionName(int emotion_id, char *name) {
   }
 }
 
+/*
+ * NOTE: The askQuestion function contains a lot of precoded things it just
+ * serves as an example that you can do something like this, it is recommended
+ * to programm your own version of this.
+ */
 void askQuestion(
     int question_id, Neuron *neurons, float *input_tensor,
     MemorySystem *memorySystem, float *learning_rate,
@@ -9156,6 +9167,13 @@ float calculatePerformanceStability(float *performance_history,
   return overall_stability;
 }
 
+/*
+ * NOTE: The adjustBehaviorBasedOnAnswers function has a lot of precoded things;
+ * it's just here to prove you can do something like this, if you want to do
+ * something specific adjust the variables in the function, regarding the
+ * askQuestion function it's also here better if you make your own version of
+ * this.
+ */
 void adjustBehaviorBasedOnAnswers(
     Neuron *neurons, float *input_tensor, MemorySystem *memorySystem,
     float *learning_rate, float *input_noise_scale, float *weight_noise_scale,
@@ -9837,6 +9855,139 @@ void adaptEthicalFramework(MoralCompass *compass, float learning_rate) {
   }
 }
 
+/*
+ * buildDecisionVector
+ *
+ * Constructs a decision vector from live system state for use
+ *
+ * Principle layout (must match initializeMoralCompass order):
+ *   [0] do no harm        -> inverse of hate + mask drain
+ *   [1] autonomy/privacy  -> inverse of h_iga mask intensity
+ *   [2] truthfulness      -> affective-emotional coherence
+ *   [3] fairness          -> negotiation balance score
+ */
+static void buildDecisionVector(float *vec, int vec_size, EmotionalSystem *emo,
+                                AffectiveSystem *aff, SocialSystem *soc,
+                                float mask_intensity) {
+  if (!vec || vec_size < 4)
+    return;
+
+  float hate = emo ? emo->emotions[EMOTION_HATE].intensity : 0.5f;
+  float love = emo ? emo->emotions[EMOTION_LOVE].intensity : 0.5f;
+
+  vec[0] = fmaxf(0.0f, 1.0f - hate - mask_intensity * 0.4f);
+
+  vec[1] = fmaxf(0.0f, 1.0f - mask_intensity);
+
+  float aff_valence = aff ? (aff->current_state.valence * 0.5f + 0.5f) : 0.5f;
+  float emo_valence = love - hate * 0.5f;
+  float coherence =
+      1.0f - fabsf(aff_valence - fmaxf(0.0f, fminf(1.0f, emo_valence)));
+  vec[2] = fmaxf(0.0f, fminf(1.0f, coherence));
+
+  float skill_bias =
+      soc ? soc->negotiation_skill * soc->social_awareness : 0.0f;
+  vec[3] = fmaxf(0.0f, 1.0f - skill_bias * 2.0f);
+
+  for (int i = 4; i < vec_size; i++)
+    vec[i] = 0.5f;
+}
+
+/*
+ * makeEthicalDecision
+ *
+ * The main entry point that we was(what a reference) missing: builds real
+ * decision options from system state, resolves the dilemma, records outcomes
+ * per principle, and returns the impact.
+ *
+ * Two options are always evaluated:
+ *   option 0 — act on current impulse (raw system state)
+ *   option 1 — restrained action (pull toward ethical midpoint)
+ *
+ * This is what should be called from the main update loop
+ * instead of the previous stub that passed zero vectors.
+ */
+DecisionImpact makeEthicalDecision(MoralCompass *compass, EmotionalSystem *emo,
+                                   AffectiveSystem *aff, SocialSystem *soc,
+                                   float mask_intensity) {
+  DecisionImpact empty = {0};
+  if (!compass)
+    return empty;
+
+  int vec_size = compass->num_principles;
+  int num_options = 2;
+
+  float *options = (float *)calloc(num_options * vec_size, sizeof(float));
+  if (!options)
+    return empty;
+
+  buildDecisionVector(&options[0], vec_size, emo, aff, soc, mask_intensity);
+
+  for (int i = 0; i < vec_size; i++) {
+    float raw = options[i];
+    options[vec_size + i] = raw * 0.4f + 0.5f * 0.6f;
+  }
+
+  DecisionImpact result =
+      resolveEthicalDilemma(compass, options, num_options, vec_size);
+
+  free(options);
+
+  /*
+   * Record outcomes per principle based on the net impact.
+   * A positive net impact means the chosen action was ethical
+   * for that principle; negative means a violation occurred.
+   */
+  for (int i = 0; i < compass->num_principles; i++) {
+    bool ethical = result.long_term_impact >= 0.0f;
+    recordDecisionOutcome(compass, i, ethical);
+  }
+
+  return result;
+}
+
+void integrateEthicsIntoUpdate(MoralCompass *compass, EmotionalSystem *emo,
+                               AffectiveSystem *aff, SocialSystem *soc,
+                               Neuron *neurons, float *weights, int max_neurons,
+                               int max_connections, float mask_intensity,
+                               float learning_rate) {
+  if (!compass)
+    return;
+
+  DecisionImpact impact =
+      makeEthicalDecision(compass, emo, aff, soc, mask_intensity);
+
+  /*
+   * When mask_intensity is high the system is in social
+   * performance mode. Flag a truthfulness violation (principle 2)
+   * since performed emotion != genuine affective state.
+   */
+  if (mask_intensity > 0.5f) {
+    recordDecisionOutcome(compass, 2, false);
+  }
+
+  /*
+   * When negotiation_skill is high relative to empathy the system
+   * is optimising for self-interest. Flag a fairness violation
+   * (principle 3).
+   */
+  if (soc && soc->negotiation_skill > soc->empathy_level + 0.2f) {
+    recordDecisionOutcome(compass, 3, false);
+  }
+
+  applyEthicalConstraints(compass, neurons, max_neurons, weights,
+                          max_connections);
+
+  adaptEthicalFramework(compass, learning_rate);
+
+  printf("Ethical decision made:\n");
+  printf("  Benefit score: %.2f\n", impact.benefit_score);
+  printf("  Harm score:    %.2f\n", impact.harm_score);
+  printf("  Net impact:    %.2f\n", impact.long_term_impact);
+  printf("  Uncertainty:   %.2f\n", impact.uncertainty);
+  printf("  Mask intensity: %.2f\n", mask_intensity);
+}
+
 void freeMoralCompass(MoralCompass *compass) {
   if (compass) {
     if (compass->principles) {
@@ -10198,7 +10349,14 @@ void updatePredictiveCommitment(AffectiveSystem *aff, SocialSystem *social_sys,
     float confidence = model->prediction_confidence;
     float trust = model->trust_level;
 
-    float influence = confidence * trust * 0.2f;
+    /*
+     * Masking inflates perceived influence: a system that masks
+     * well appears more predictable to itself, so influence is
+     * weighted upward by negotiation_skill.
+     */
+    float mask_bias = 1.0f + social_sys->negotiation_skill *
+                                 social_sys->social_awareness * 0.4f;
+    float influence = confidence * trust * 0.2f * mask_bias;
 
     aff->current_state.complexity += influence * prediction_error;
 
@@ -10283,6 +10441,105 @@ void reinforceAttractorFromBond(AffectiveSystem *sys, AttachmentBond *bond,
   }
 }
 
+static inline float safe_div(float n, float d, float fallback) {
+  if (d == 0.0f || !isfinite(d) || !isfinite(n))
+    return fallback;
+  return n / d;
+}
+
+static inline float sanitize(float v, float lo, float hi, float mid) {
+  if (!isfinite(v))
+    return mid;
+  return fmaxf(lo, fminf(hi, v));
+}
+
+/*
+ * h_iga: social mask layer.
+ *
+ * Models the gap between performed emotion and actual affective
+ * state. High social_awareness + low empathy = mask engagement.
+ * Returns mask_intensity in [0, 1].
+ */
+
+float h_iga(SocialSystem *social_sys, AffectiveSystem *aff_sys,
+            EmotionalSystem *emo_sys, int person_id) {
+  if (!social_sys || !aff_sys)
+    return 0.0f;
+
+  int model_index = -1;
+  for (int i = 0; i < social_sys->model_count; i++) {
+    if (social_sys->person_models[i].person_id == person_id) {
+      model_index = i;
+      break;
+    }
+  }
+
+  float relationship_pressure = 0.3f;
+  float trust = 0.3f;
+  float interaction_density = 0.0f;
+
+  if (model_index >= 0) {
+    PersonModel *m = &social_sys->person_models[model_index];
+    trust = sanitize(m->trust_level, 0.0f, 1.0f, 0.3f);
+    relationship_pressure =
+        sanitize((1.0f - m->relationship_quality) * m->prediction_confidence,
+                 0.0f, 1.0f, 0.3f);
+    interaction_density = sanitize(
+        safe_div((float)m->interaction_count, 20.0f, 0.0f), 0.0f, 1.0f, 0.0f);
+  }
+
+  float empathy = sanitize(social_sys->empathy_level, 0.0f, 1.0f, 0.5f);
+  float awareness = sanitize(social_sys->social_awareness, 0.0f, 1.0f, 0.0f);
+
+  float mask_tendency = awareness * (1.0f - empathy);
+
+  float mask_intensity =
+      sanitize(mask_tendency * relationship_pressure * (1.0f - trust) +
+                   interaction_density * 0.15f,
+               0.0f, 1.0f, 0.0f);
+
+  float genuine_valence =
+      sanitize(aff_sys->current_state.valence, -1.0f, 1.0f, 0.0f);
+
+  if (emo_sys) {
+    float emo_love =
+        sanitize(emo_sys->emotions[EMOTION_LOVE].intensity, 0.0f, 1.0f, 0.0f);
+
+    float performed_love =
+        sanitize(emo_love + mask_intensity * (0.6f - genuine_valence), 0.0f,
+                 1.0f, emo_love);
+
+    float neg_skill = sanitize(social_sys->negotiation_skill, 0.0f, 1.0f, 0.0f);
+    float displacement_weight = mask_intensity * neg_skill;
+
+    emo_sys->emotions[EMOTION_LOVE].intensity =
+        sanitize(emo_love * (1.0f - displacement_weight) +
+                     performed_love * displacement_weight,
+                 0.0f, 1.0f, emo_love);
+  }
+
+  float complexity =
+      sanitize(aff_sys->current_state.complexity, 0.0f, 1.0f, 0.5f);
+
+  float suppressed = complexity * (1.0f - mask_intensity * 0.5f);
+  aff_sys->current_state.complexity = sanitize(
+      complexity * (1.0f - mask_intensity) + suppressed * mask_intensity, 0.0f,
+      1.0f, complexity);
+
+  aff_sys->current_state.valence = sanitize(
+      genuine_valence - mask_intensity * 0.08f, -1.0f, 1.0f, genuine_valence);
+
+  float neg_skill = sanitize(social_sys->negotiation_skill, 0.0f, 1.0f, 0.0f);
+  float lr = sanitize(social_sys->learning_rate, 0.0f, 1.0f, 0.05f);
+
+  social_sys->negotiation_skill =
+      sanitize(neg_skill * (1.0f - lr) +
+                   fminf(1.0f, neg_skill + mask_intensity * 0.05f) * lr,
+               0.0f, 1.0f, neg_skill);
+
+  return mask_intensity;
+}
+
 void simulateEmotionalTrajectory(AffectiveSystem *sys, SocialSystem *social_sys,
                                  float *context, int steps) {
   printf("\n=== Emotional Trajectory Simulation ===\n");
@@ -10307,6 +10564,16 @@ void simulateEmotionalTrajectory(AffectiveSystem *sys, SocialSystem *social_sys,
 
       model->prediction_confidence =
           fminf(1.0f, fmaxf(0.0f, model->prediction_confidence));
+
+      /*
+       * Periodically invoke h_iga to simulate social masking
+       * during the trajectory — the emotional path diverges
+       * from the affective path when masking is active.
+       */
+      if (step % 10 == 0 && sys->num_bonds > 0) {
+        int bond_person = (int)sys->bonds[idx % sys->num_bonds].entity_id;
+        h_iga(social_sys, sys, NULL, bond_person);
+      }
     }
 
     updateAffectiveComplexity(sys, step);
@@ -10352,6 +10619,8 @@ void printAttractorAnalysis(AffectiveSystem *sys) {
   }
 }
 
+// Older parts -> a_marta marker (This comment is only for comparison don't try
+// to make anything out of it)
 EmotionalSystem *initializeEmotionalSystem() {
   EmotionalSystem *system = (EmotionalSystem *)malloc(sizeof(EmotionalSystem));
   if (!system) {
@@ -10461,30 +10730,39 @@ void detectEmotionalTriggers(EmotionalSystem *system, Neuron *neurons,
                              unsigned int timestamp, float satisfaction,
                              AffectiveSystem *aff_sys,
                              SocialSystem *social_sys) {
+  if (num_neurons <= 0) {
+    updateEmotionalMemory(system);
+    return;
+  }
+
   float error_rate = 0.0f;
-  float output_variance = 0.0f;
   float mean_output = 0.0f;
 
   for (int i = 0; i < num_neurons; i++) {
     error_rate += fabsf(neurons[i].output - target_outputs[i]);
     mean_output += neurons[i].output;
   }
-  error_rate /= (float)num_neurons;
-  mean_output /= (float)num_neurons;
+  error_rate = safe_div(error_rate, (float)num_neurons, 0.0f);
+  mean_output = safe_div(mean_output, (float)num_neurons, 0.0f);
 
+  float output_variance = 0.0f;
   for (int i = 0; i < num_neurons; i++) {
     float diff = neurons[i].output - mean_output;
     output_variance += diff * diff;
   }
-  output_variance /= (float)num_neurons;
+  output_variance = safe_div(output_variance, (float)num_neurons, 0.0f);
 
-  float current_love = system->emotions[EMOTION_LOVE].intensity;
-  float current_hate = system->emotions[EMOTION_HATE].intensity;
-  float emotional_momentum = (current_love - current_hate);
+  float current_love =
+      sanitize(system->emotions[EMOTION_LOVE].intensity, 0.0f, 1.0f, 0.0f);
+  float current_hate =
+      sanitize(system->emotions[EMOTION_HATE].intensity, 0.0f, 1.0f, 0.0f);
+  float emotional_momentum = current_love - current_hate;
 
-  float problem_difficulty = error_rate * 1.5f;
+  float problem_difficulty = sanitize(error_rate * 1.5f, 0.0f, 2.0f, 0.0f);
   float task_engagement = fminf(1.0f, output_variance * 3.0f);
-  float contextual_satisfaction = satisfaction * (1.0f + emotional_momentum);
+
+  float contextual_satisfaction = sanitize(
+      satisfaction * (1.0f + emotional_momentum), 0.0f, 1.0f, satisfaction);
 
   float success_factor =
       fmaxf(0.0f, (1.0f - problem_difficulty) * contextual_satisfaction);
@@ -10494,13 +10772,11 @@ void detectEmotionalTriggers(EmotionalSystem *system, Neuron *neurons,
   float love_base = success_factor * (0.7f + task_engagement * 0.3f);
   float hate_base = frustration_factor * (0.8f + problem_difficulty * 0.2f);
 
-  if (current_love > 0.3f && success_factor > 0.2f) {
+  if (current_love > 0.3f && success_factor > 0.2f)
     love_base *= (1.0f + current_love * 0.4f);
-  }
 
-  if (current_hate > 0.3f && frustration_factor > 0.2f) {
+  if (current_hate > 0.3f && frustration_factor > 0.2f)
     hate_base *= (1.0f + current_hate * 0.5f);
-  }
 
   if (current_love > 0.4f && hate_base > 0.3f) {
     hate_base *= (1.0f - current_love * 0.3f);
@@ -10512,8 +10788,20 @@ void detectEmotionalTriggers(EmotionalSystem *system, Neuron *neurons,
     hate_base *= 0.95f;
   }
 
+  love_base = sanitize(love_base, 0.0f, 1.0f, 0.0f);
+  hate_base = sanitize(hate_base, 0.0f, 1.0f, 0.0f);
+
+  float mask_intensity = 0.0f;
+  if (social_sys && aff_sys && social_sys->model_count > 0) {
+    int ref_person = social_sys->person_models[0].person_id;
+    mask_intensity = h_iga(social_sys, aff_sys, system, ref_person);
+  }
+
   float prev_love = system->emotions[EMOTION_LOVE].intensity;
   float prev_hate = system->emotions[EMOTION_HATE].intensity;
+
+  hate_base *= (1.0f - mask_intensity * 0.6f);
+  hate_base = fmaxf(0.0f, hate_base);
 
   triggerEmotion(system, EMOTION_LOVE, love_base, timestamp);
   triggerEmotion(system, EMOTION_HATE, hate_base, timestamp);
@@ -10533,20 +10821,31 @@ void detectEmotionalTriggers(EmotionalSystem *system, Neuron *neurons,
 
   float net_valence = system->emotions[EMOTION_LOVE].intensity -
                       system->emotions[EMOTION_HATE].intensity;
-  float total_arousal = system->emotions[EMOTION_LOVE].intensity +
-                        system->emotions[EMOTION_HATE].intensity;
+  float total_arousal = sanitize(system->emotions[EMOTION_LOVE].intensity +
+                                     system->emotions[EMOTION_HATE].intensity,
+                                 0.0f, 1.0f, 0.0f);
 
   EmotionVector target = {
-      .valence = net_valence * 0.9f,
+      .valence = sanitize(net_valence * 0.9f, -1.0f, 1.0f, 0.0f),
       .arousal = fminf(1.0f, total_arousal * 0.7f + task_engagement * 0.3f),
-      .dominance = 0.5f + net_valence * 0.3f + task_engagement * 0.2f,
+      .dominance = sanitize(0.5f + net_valence * 0.3f + task_engagement * 0.2f,
+                            0.0f, 1.0f, 0.5f),
       .complexity =
           fminf(1.0f, (system->emotions[EMOTION_LOVE].intensity *
                        system->emotions[EMOTION_HATE].intensity * 3.0f) +
                           output_variance),
-      .temporal_depth = 1.0f + total_arousal * 2.0f};
+      .temporal_depth =
+          sanitize(1.0f + total_arousal * 2.0f, 1.0f, 3.0f, 1.0f)};
 
   float momentum_strength = 0.1f + total_arousal * 0.15f;
+
+  if (social_sys) {
+    float social_momentum_bias =
+        sanitize(social_sys->social_awareness, 0.0f, 1.0f, 0.0f) *
+        sanitize(social_sys->negotiation_skill, 0.0f, 1.0f, 0.0f) * 0.3f;
+    momentum_strength = fminf(0.8f, momentum_strength + social_momentum_bias);
+  }
+
   updateEmotionMomentum(&aff_sys->current_state, &target, momentum_strength);
 
   updateAffectiveComplexity(aff_sys, timestamp);
@@ -10555,20 +10854,19 @@ void detectEmotionalTriggers(EmotionalSystem *system, Neuron *neurons,
     for (int i = 0; i < social_sys->model_count; i++) {
       PersonModel *model = &social_sys->person_models[i];
 
-      float interaction_valence = net_valence;
+      float true_valence = sanitize(
+          net_valence * (1.0f - mask_intensity * 0.7f), -1.0f, 1.0f, 0.0f);
       float interaction_intensity = total_arousal;
 
-      model->relationship_quality += interaction_valence *
-                                     social_sys->learning_rate *
-                                     (0.5f + interaction_intensity * 0.5f);
-
-      model->trust_level +=
-          interaction_valence * 0.5f * social_sys->learning_rate;
-
       model->relationship_quality =
-          fminf(1.0f, fmaxf(-1.0f, model->relationship_quality));
+          sanitize(model->relationship_quality +
+                       true_valence * social_sys->learning_rate *
+                           (0.5f + interaction_intensity * 0.5f),
+                   -1.0f, 1.0f, 0.0f);
 
-      model->trust_level = fminf(1.0f, fmaxf(0.0f, model->trust_level));
+      model->trust_level = sanitize(
+          model->trust_level + true_valence * 0.5f * social_sys->learning_rate,
+          0.0f, 1.0f, 0.3f);
 
       model->interaction_count++;
     }
@@ -11314,15 +11612,29 @@ void updateEmpathy(SocialSystem *system, EmotionalSystem *emotional_system) {
   }
   emotion_diff /= 5.0f;
 
-  // Update empathy based on emotional understanding
   float empathy_adjustment = (1.0f - emotion_diff) * system->learning_rate;
-  system->empathy_level =
-      fmin(1.0f, system->empathy_level + empathy_adjustment);
 
-  // Apply empathy to emotional regulation
+  /*
+   * Decay term prevents empathy from saturating at 1.0.
+   * High empathy with low social_awareness is incoherent —
+   * the decay is weighted by (1 - social_awareness) so a system
+   * that isn't socially aware loses empathy over time.
+   */
+  float empathy_decay =
+      (1.0f - system->social_awareness) * system->learning_rate * 0.3f;
+
+  system->empathy_level =
+      fminf(1.0f, fmaxf(0.0f, system->empathy_level + empathy_adjustment -
+                                  empathy_decay));
+
+  float masking_penalty = (1.0f - system->empathy_level) * 0.15f;
+
   emotional_system->emotional_regulation =
       emotional_system->emotional_regulation * 0.9f +
-      system->empathy_level * 0.1f;
+      system->empathy_level * 0.1f - masking_penalty;
+
+  emotional_system->emotional_regulation =
+      fmaxf(0.0f, emotional_system->emotional_regulation);
 }
 
 void updatePersonModel(SocialSystem *system, int person_id,
@@ -11404,42 +11716,45 @@ float negotiateOutcome(SocialSystem *system, int person_id, float *goals,
                            ? system->person_models[model_index].trust_level
                            : 0.3f;
 
-  // Balance between self-interest and other-interest based on empathy and trust
-  float self_weight = 1.0f - (system->empathy_level * 0.5f);
-  float other_weight = system->empathy_level * trust_factor;
+  float skill_bias = system->negotiation_skill * 0.4f;
+  float self_weight = (1.0f - system->empathy_level * 0.5f) + skill_bias;
+  float other_weight =
+      system->empathy_level * trust_factor * (1.0f - skill_bias * 0.5f);
 
-  // Calculate compromise solution
-  for (int i = 0; i < 5; i++) { // Assuming goal vectors are of length 5
-    compromise[i] = (goals[i] * self_weight + other_goals[i] * other_weight) /
-                    (self_weight + other_weight);
+  float weight_sum = self_weight + other_weight;
+  if (weight_sum < 1e-6f)
+    weight_sum = 1e-6f;
+
+  for (int i = 0; i < 5; i++) {
+    compromise[i] = sanitize(
+        (goals[i] * self_weight + other_goals[i] * other_weight) / weight_sum,
+        0.0f, 1.0f, 0.5f);
   }
 
-  // Calculate satisfaction level (how close to own goals)
   float satisfaction = 0.0f;
   for (int i = 0; i < 5; i++) {
-    satisfaction += (1.0f - fabs(goals[i] - compromise[i]));
+    satisfaction += (1.0f - fabsf(goals[i] - compromise[i]));
   }
-  satisfaction /= 5.0f;
+  satisfaction = sanitize(safe_div(satisfaction, 5.0f, 0.0f), 0.0f, 1.0f, 0.0f);
 
-  // Improve negotiation skill based on outcome
   system->negotiation_skill =
-      system->negotiation_skill * (1.0f - system->learning_rate) +
-      satisfaction * system->learning_rate;
+      sanitize(system->negotiation_skill * (1.0f - system->learning_rate) +
+                   satisfaction * system->learning_rate,
+               0.0f, 1.0f, 0.0f);
 
-  // Update trust if this is a known person
   if (model_index >= 0) {
-    // Trust increases if compromise favors the other party somewhat
     float generosity = 0.0f;
     for (int i = 0; i < 5; i++) {
-      if (fabs(compromise[i] - other_goals[i]) <
-          fabs(compromise[i] - goals[i])) {
+      if (fabsf(compromise[i] - other_goals[i]) <
+          fabsf(compromise[i] - goals[i])) {
         generosity += 0.1f;
       }
     }
 
     system->person_models[model_index].trust_level =
-        system->person_models[model_index].trust_level * 0.9f +
-        (satisfaction + generosity) * 0.1f;
+        sanitize(system->person_models[model_index].trust_level * 0.9f +
+                     (satisfaction + generosity) * 0.1f,
+                 0.0f, 1.0f, 0.3f);
   }
 
   return satisfaction;
@@ -11479,19 +11794,16 @@ void recordSocialInteraction(SocialSystem *system, int person_id,
                              float *emotional_state, float cooperation_level,
                              float satisfaction, const char *type,
                              const char *context) {
-  // If we've reached max interactions, make room by shifting array
   if (system->interaction_count >= system->max_interactions) {
     // Free the context string of the oldest interaction
     free(system->interactions[0].context);
 
-    // Shift all interactions one position forward
     for (int i = 0; i < system->max_interactions - 1; i++) {
       system->interactions[i] = system->interactions[i + 1];
     }
     system->interaction_count = system->max_interactions - 1;
   }
 
-  // Add new interaction at the end
   int idx = system->interaction_count;
   system->interactions[idx].timestamp = (unsigned int)time(NULL);
   system->interactions[idx].person_id = person_id;
@@ -11508,10 +11820,25 @@ void recordSocialInteraction(SocialSystem *system, int person_id,
 
   system->interaction_count++;
 
-  // Update social awareness based on interaction history diversity
   float type_diversity = calculateInteractionDiversity(system);
+
+  /*
+   * Now the update floor is raised by
+   * a base_awareness term derived from interaction volume,
+   * so awareness can't collapse below a minimum reflecting
+   * the fact that many interactions happened at all.
+   */
+  float interaction_volume =
+      fminf(1.0f, (float)system->interaction_count / 50.0f);
+  float base_awareness = interaction_volume * 0.2f;
+
+  float skill_amplifier = 1.0f + system->negotiation_skill * 0.5f;
+
   system->social_awareness =
-      system->social_awareness * 0.95f + type_diversity * 0.05f;
+      system->social_awareness * 0.9f +
+      (type_diversity * skill_amplifier + base_awareness) * 0.1f;
+
+  system->social_awareness = fminf(1.0f, fmaxf(0.0f, system->social_awareness));
 }
 
 void predictBehavior(SocialSystem *system, int person_id, const char *context,
@@ -11575,25 +11902,38 @@ void applySocialInfluence(SocialSystem *system, Neuron *neurons, float *weights,
   int social_neuron_start = max_neurons / 2;
   int social_neuron_count = max_neurons / 10;
 
+  /*
+   * Social factor now dominates neural modulation.
+   * The masking component (negotiation_skill * social_awareness)
+   * adds an extra bias that was previously absent — social
+   * performance reshapes neural weights, not just output scaling.
+   */
+  float social_core =
+      (system->empathy_level + system->negotiation_skill +
+       system->behavior_prediction_accuracy + system->social_awareness) /
+      4.0f;
+
+  float masking_amplifier =
+      1.0f + system->negotiation_skill * system->social_awareness * 0.6f;
+
+  float social_factor = fminf(1.0f, social_core * masking_amplifier);
+
   for (int i = 0;
        i < social_neuron_count && i + social_neuron_start < max_neurons; i++) {
     int neuron_idx = social_neuron_start + i;
 
-    // Scale neuron output based on social capabilities
-    float social_factor =
-        (system->empathy_level + system->negotiation_skill +
-         system->behavior_prediction_accuracy + system->social_awareness) /
-        4.0f;
-
-    // Apply social influence proportional to social skills
     neurons[neuron_idx].output =
-        neurons[neuron_idx].output * (1.0f - 0.3f * social_factor) +
-        0.3f * social_factor;
+        neurons[neuron_idx].output * (1.0f - 0.5f * social_factor) +
+        0.5f * social_factor;
 
-    // Modify weights to strengthen social connections
     for (int j = 0; j < 10 && j < MAX_CONNECTIONS; j++) {
       int conn_idx = neuron_idx * MAX_CONNECTIONS + j;
-      weights[conn_idx] = weights[conn_idx] * 0.9f + 0.1f * social_factor;
+      /*
+       * Weight update now has a stronger social pull:
+       * 0.7/0.3 split instead of 0.9/0.1 — the social system
+       * meaningfully restructures connection strengths over time.
+       */
+      weights[conn_idx] = weights[conn_idx] * 0.7f + 0.3f * social_factor;
     }
   }
 }
@@ -14132,6 +14472,12 @@ int main(int argc, char *argv[]) {
          moralCompass->num_principles);
   printf("Initial ethical alignment: %.2f\n", moralCompass->overall_alignment);
 
+  /*
+   * NOTE: Many of the values are precoded in the main function for testing;
+   * optimally, you would either calculate them or get them in another way.
+   * This is in no way an optimal example.
+   */
+
   // Main simulation loop
   printf("\nStarting training with loaded memory state...\n");
   for (int step = 0; step < STEPS; step++) {
@@ -15129,6 +15475,10 @@ int main(int argc, char *argv[]) {
         0.7f, 0.3f, 0.2f, 0.1f,
         0.4f}; // This would come normally from external input
     updatePersonModel(social_system, 1, actual_behavior, predicted_behavior);
+
+    integrateEthicsIntoUpdate(moralCompass, emotional_system, aff_sys,
+                              social_system, neurons, weights, max_neurons,
+                              max_connections, 0.3f, learning_rate);
 
     // Apply social influence to decision making
     applySocialInfluence(social_system, neurons, weights, max_neurons);
