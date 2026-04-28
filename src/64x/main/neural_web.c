@@ -733,6 +733,10 @@ typedef struct {
   uint32_t y;
 } uint2;
 
+static inline double MIN(double a, double b) { return fmin(a, b); }
+
+static inline double MAX(double a, double b) { return fmax(a, b); }
+
 static inline float fast_tanh(float x) {
   float x2 = x * x;
   float a = x * (135135.0f + x2 * (17325.0f + x2 * (378.0f + x2)));
@@ -6874,8 +6878,6 @@ void updateReferenceStates(SelfIdentitySystem *system) {
 
   free(current_state);
 }
-
-float sigmoid(float x) { return 1.0f / (1.0f + expf(-x)); }
 
 // Compute experience value using weighted encoding
 float computeExperienceValue(float *experience_vector) {
