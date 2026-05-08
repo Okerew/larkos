@@ -174,6 +174,15 @@ typedef struct {
 } MetaController;
 
 typedef struct {
+  char word[50];
+  char category[50];
+  char *connects_to;
+  float semantic_weight;
+  const char *description;
+  float letter_weight;
+} VocabularyEntry;
+
+typedef struct {
   float output_stability; // Variation in neuron's output
   float prediction_error;
   float connection_quality;
@@ -799,10 +808,6 @@ void evaluateGoalProgress(Goal *goal, Neuron *neurons, float *target_outputs);
 void validateCriticalSecurity(Neuron *neurons, float *weights, int *connections,
                               int max_neurons, int max_connections,
                               MemorySystem *memorySystem);
-void criticalSecurityShutdown(Neuron *neurons, float *weights, int *connections,
-                              MemorySystem *memorySystem,
-                              SecurityValidationStatus *secStatus);
-
 void integrateKnowledgeFilter(KnowledgeFilter *knowledge_filter,
                               MemorySystem *memorySystem, Neuron *neurons,
                               float *input_tensor);

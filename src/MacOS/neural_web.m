@@ -404,6 +404,7 @@ typedef struct DecisionPath {
   uint32_t *connections; // Connection changes
   float score;           // Path evaluation score
   int num_steps;         // Number of prediction steps
+  int max_neurons;       // Maximum number of neurons in path
 } DecisionPath;
 
 typedef struct MetacognitionMetrics {
@@ -421,6 +422,7 @@ typedef struct MetaLearningState {
   float stability_index;     // System stability measure
   float *priority_weights;   // Attention allocation weights
   uint32_t current_phase;    // Current learning phase
+  int num_regions_allocated; // Size of allocated priority_weights array
 } MetaLearningState;
 
 typedef struct {
@@ -761,7 +763,7 @@ MemorySystem *createMemorySystem(unsigned int capacity) {
   system->entries = system->hierarchy.short_term.entries;
   system->head = 0;
   system->size = 0;
-  system->capacity = capacity;
+  system->capacity = system->hierarchy.short_term.capacity;
 
   return system;
 }
@@ -781,7 +783,13 @@ void consolidateMemory(MemorySystem *system) {
 }
 
 void freeMemorySystem(MemorySystem *system) {
-  free(system->entries);
+  if (!system)
+    return;
+
+  free(system->hierarchy.short_term.entries);
+  free(system->hierarchy.medium_term.entries);
+  free(system->hierarchy.long_term.entries);
+
   free(system);
 }
 
@@ -1042,10 +1050,7 @@ void updateClusterCoherence(SemanticCluster *cluster) {
   // Calculate average pairwise similarity between all vectors in cluster
   for (unsigned int i = 0; i < cluster->size; i++) {
     for (unsigned int j = i + 1; j < cluster->size; j++) {
-      float similarity = computeCosineSimilarity(
-          cluster->vector, // Using cluster center as reference
-          cluster->vector, // This would normally be individual memories
-          FEATURE_VECTOR_SIZE);
+      float similarity = 1.0f;
       total_similarity += similarity;
       num_pairs++;
     }
@@ -1182,9 +1187,11 @@ void addMemory(
     // Add to focused attention
     if (working_memory->focus.size < working_memory->focus.capacity) {
       enhanced.features = malloc(FEATURE_VECTOR_SIZE * sizeof(float));
+      enhanced.context_vector = malloc(CONTEXT_VECTOR_SIZE * sizeof(float));
+      enhanced.depth = 0;
+      enhanced.abstraction_level = entry.importance;
       extractSemanticFeatures(entry.vector, enhanced.features,
                               feature_projection_matrix);
-      enhanced.context_vector = malloc(CONTEXT_VECTOR_SIZE * sizeof(float));
       memcpy(enhanced.context_vector, working_memory->global_context,
              CONTEXT_VECTOR_SIZE * sizeof(float));
       working_memory->focus.entries[working_memory->focus.size++] = enhanced;
@@ -1194,9 +1201,11 @@ void addMemory(
     // Add to active memory
     if (working_memory->active.size < working_memory->active.capacity) {
       enhanced.features = malloc(FEATURE_VECTOR_SIZE * sizeof(float));
+      enhanced.context_vector = malloc(CONTEXT_VECTOR_SIZE * sizeof(float));
+      enhanced.depth = 0;
+      enhanced.abstraction_level = entry.importance;
       extractSemanticFeatures(entry.vector, enhanced.features,
                               feature_projection_matrix);
-      enhanced.context_vector = malloc(CONTEXT_VECTOR_SIZE * sizeof(float));
       memcpy(enhanced.context_vector, working_memory->global_context,
              CONTEXT_VECTOR_SIZE * sizeof(float));
       working_memory->active.entries[working_memory->active.size++] = enhanced;
@@ -1464,9 +1473,23 @@ void loadHierarchicalMemory(MemorySystem *system, const char *filename) {
   }
 
   // Read structure sizes
-  fread(&system->hierarchy.short_term.size, sizeof(unsigned int), 1, fp);
-  fread(&system->hierarchy.medium_term.size, sizeof(unsigned int), 1, fp);
-  fread(&system->hierarchy.long_term.size, sizeof(unsigned int), 1, fp);
+  unsigned int st_size, mt_size, lt_size;
+  fread(&st_size, sizeof(unsigned int), 1, fp);
+  fread(&mt_size, sizeof(unsigned int), 1, fp);
+  fread(&lt_size, sizeof(unsigned int), 1, fp);
+
+  // Validate sizes against capacity
+  if (st_size > system->hierarchy.short_term.capacity ||
+      mt_size > system->hierarchy.medium_term.capacity ||
+      lt_size > system->hierarchy.long_term.capacity) {
+    printf("Error: Loaded sizes exceed capacity\n");
+    fclose(fp);
+    return;
+  }
+
+  system->hierarchy.short_term.size = st_size;
+  system->hierarchy.medium_term.size = mt_size;
+  system->hierarchy.long_term.size = lt_size;
 
   // Read memory entries for each level
   fread(system->hierarchy.short_term.entries, sizeof(MemoryEntry),
@@ -1660,7 +1683,7 @@ const float letter_weights[26] = {1.0f,  0.9f,  0.8f, 0.85f, 0.95f, 0.75f, 0.7f,
                                   1.0f,  0.65f, 0.6f, 0.85f, 0.95f, 0.8f,  0.7f,
                                   0.65f, 0.75f, 0.6f, 0.7f,  0.6f};
 
-const int vocab_size = sizeof(vocabulary) / sizeof(vocabulary[0]);
+enum { vocab_size = sizeof(vocabulary) / sizeof(vocabulary[0]) };
 
 void swap(char *a, char *b) {
   char temp = *a;
@@ -1793,9 +1816,16 @@ const char *mapToWord(float value) {
 
     customWord[wordLength] = '\0';
     if (!isWordMeaningful(customWord)) {
-      // If the word doesn't make sense, regenerate it
-      return mapToWord(fabs(value) *
-                       0.9f); // Slightly adjust value and try again
+      // If the word doesn't make sense, regenerate it with decay limit
+      static int recursion_depth = 0;
+      if (recursion_depth < 10) {
+        recursion_depth++;
+        const char *result = mapToWord(fabs(value) * 0.9f);
+        recursion_depth--;
+        return result;
+      }
+      // Fallback after too many recursions
+      return vocabulary[0].word;
     }
     return customWord;
   }
@@ -2542,8 +2572,10 @@ float *getWordEmbedding(const char *word, const char **context,
       }
     }
 
-    float complexity_factor =
-        strlen(vocabulary[word_index].description) / 50.0f;
+    float complexity_factor = 0.0f;
+    if (vocabulary[word_index].description) {
+      complexity_factor = strlen(vocabulary[word_index].description) / 50.0f;
+    }
     float scaling_factor = (vocabulary[word_index].semantic_weight +
                             vocabulary[word_index].letter_weight) *
                            (1.0f + complexity_factor);
@@ -2595,7 +2627,10 @@ float cosineSimilarity(float *vec1, float *vec2, int size) {
     norm1 += vec1[i] * vec1[i];
     norm2 += vec2[i] * vec2[i];
   }
-  return dot / (sqrtf(norm1) * sqrtf(norm2));
+  float denom = sqrtf(norm1) * sqrtf(norm2);
+  if (denom < 1e-8f)
+    return 0.0f;
+  return dot / denom;
 }
 
 // Initialize attention parameters with Xavier/Glorot initialization
@@ -3033,14 +3068,12 @@ MemoryEntry *retrieveMemory(MemorySystem *system) {
   MemoryEntry *most_relevant = NULL;
   float highest_importance = 0.0f;
 
-  // Search short-term if still nothing found
-  if (!most_relevant) {
-    for (unsigned int i = 0; i < system->hierarchy.short_term.size; i++) {
-      if (system->hierarchy.short_term.entries[i].importance >
-          highest_importance) {
-        highest_importance = system->hierarchy.short_term.entries[i].importance;
-        most_relevant = &system->hierarchy.short_term.entries[i];
-      }
+  // Search long-term memory first (highest priority)
+  for (unsigned int i = 0; i < system->hierarchy.long_term.size; i++) {
+    if (system->hierarchy.long_term.entries[i].importance >
+        highest_importance) {
+      highest_importance = system->hierarchy.long_term.entries[i].importance;
+      most_relevant = &system->hierarchy.long_term.entries[i];
     }
   }
 
@@ -3056,12 +3089,14 @@ MemoryEntry *retrieveMemory(MemorySystem *system) {
     }
   }
 
-  // Search long-term memory first
-  for (unsigned int i = 0; i < system->hierarchy.long_term.size; i++) {
-    if (system->hierarchy.long_term.entries[i].importance >
-        highest_importance) {
-      highest_importance = system->hierarchy.long_term.entries[i].importance;
-      most_relevant = &system->hierarchy.long_term.entries[i];
+  // Search short-term if still nothing found
+  if (!most_relevant) {
+    for (unsigned int i = 0; i < system->hierarchy.short_term.size; i++) {
+      if (system->hierarchy.short_term.entries[i].importance >
+          highest_importance) {
+        highest_importance = system->hierarchy.short_term.entries[i].importance;
+        most_relevant = &system->hierarchy.short_term.entries[i];
+      }
     }
   }
 
@@ -3367,8 +3402,10 @@ double getCurrentTime() {
 // Function to calculate performance score
 float calculatePerformanceScore(PerformanceMetrics metrics) {
   // Combine multiple factors into a single score
-  float time_score = 1.0f / (float)metrics.execution_time;
-  float output_score = metrics.average_output;
+  float time_score = (metrics.execution_time > 1e-6)
+                         ? 1.0f / (float)metrics.execution_time
+                         : 0.0f;
+  float output_score = fmaxf(0.0f, fminf(1.0f, metrics.average_output));
   float error_penalty = 1.0f - metrics.error_rate;
 
   // Weight different factors
@@ -3544,7 +3581,8 @@ float measureNetworkStability(Neuron *neurons, float *previous_states) {
   for (int i = 0; i < MAX_NEURONS; i++) {
     stability_measure += fabsf(neurons[i].state - previous_states[i]);
   }
-  return 1.0f - (stability_measure / MAX_NEURONS);
+  float result = 1.0f - (stability_measure / MAX_NEURONS);
+  return fmaxf(0.0f, fminf(1.0f, result)); // Clamp to [0,1]
 }
 
 void saveSystemParameters(const SystemParameters *params,
@@ -3749,11 +3787,12 @@ float computeMemoryVectorSimilarity(float *vector1, float *vector2) {
   magnitude1 = sqrt(magnitude1);
   magnitude2 = sqrt(magnitude2);
 
-  if (magnitude1 == 0.0f || magnitude2 == 0.0f) {
+  if (magnitude1 < 1e-8f || magnitude2 < 1e-8f) {
     return 0.0f;
   }
 
-  return dot_product / (magnitude1 * magnitude2);
+  float result = dot_product / (magnitude1 * magnitude2);
+  return fmaxf(-1.0f, fminf(1.0f, result)); // Clamp to [-1, 1]
 }
 
 // Initialize pattern matching parameters
@@ -3799,8 +3838,13 @@ void printPatternMatches(MemorySystem *system, PatternMatch *matches,
     printf("  Index: %d\n", matches[i].index);
     printf("  Similarity: %.4f\n", matches[i].similarity);
     printf("  Timestamp: %u\n", matches[i].timestamp);
-    printf("  Importance: %.4f\n",
-           system->entries[matches[i].index].importance);
+    // We need to search for the memory in the hierarchy
+    float importance = 0.0f;
+    if (matches[i].index < system->hierarchy.long_term.size) {
+      importance =
+          system->hierarchy.long_term.entries[matches[i].index].importance;
+    }
+    printf("  Importance: %.4f\n", importance);
     printf("\n");
   }
 }
@@ -4024,7 +4068,7 @@ void updateWorkingMemory(WorkingMemorySystem *working_memory, Neuron *neurons,
                          unsigned int step) {
   // Update focused attention based on prediction errors
   float total_error = 0.0f;
-  for (unsigned int i = 0; i < working_memory->focus.capacity; i++) {
+  for (unsigned int i = 0; i < working_memory->focus.size; i++) {
     if (neurons[i].output != 0) { // Only consider active neurons
       float error = fabs(neurons[i].output - target_outputs[i]);
       total_error += error;
@@ -4223,25 +4267,34 @@ void generateTaskPrompt(TaskPrompt *prompt, int step) {
 float assessMemoryCoherence(const MemoryEntry *memory,
                             const Neuron *currentNeurons) {
   float coherence_score = 0.0f;
-  int vector_size =
-      MAX_NEURONS * 2; // Size accounts for both state and output values
+  int valid_comparisons = 0;
 
   // Compare memory vector with current neuron states
-  for (int i = 0; i < MAX_NEURONS; i++) {
+  // Note: memory->vector is MEMORY_VECTOR_SIZE, not MAX_NEURONS*2
+  int compare_size =
+      (MEMORY_VECTOR_SIZE < MAX_NEURONS) ? MEMORY_VECTOR_SIZE : MAX_NEURONS;
+
+  for (int i = 0; i < compare_size; i++) {
     // Compare state
     float state_diff = fabs(memory->vector[i] - currentNeurons[i].state);
-    coherence_score += (1.0f - state_diff);
+    coherence_score += (1.0f - fminf(1.0f, state_diff));
+    valid_comparisons++;
 
-    // Compare output
-    float output_diff =
-        fabs(memory->vector[i + MAX_NEURONS] - currentNeurons[i].output);
-    coherence_score += (1.0f - output_diff);
+    // Compare output (if within bounds)
+    if (i + MAX_NEURONS < MEMORY_VECTOR_SIZE) {
+      float output_diff =
+          fabs(memory->vector[i + MAX_NEURONS] - currentNeurons[i].output);
+      coherence_score += (1.0f - fminf(1.0f, output_diff));
+      valid_comparisons++;
+    }
   }
 
   // Normalize coherence score to [0,1] range
-  coherence_score /= (float)(vector_size);
+  if (valid_comparisons > 0) {
+    coherence_score /= (float)(valid_comparisons);
+  }
 
-  return coherence_score;
+  return fmaxf(0.0f, fminf(1.0f, coherence_score));
 }
 
 float mapWordToValue(const char *word) {
@@ -4258,13 +4311,22 @@ float mapWordToValue(const char *word) {
 // Function to transform neuron outputs into text
 void transformOutputsToText(float *outputs, int size, char *outputText,
                             int textSize) {
+  if (!outputText || textSize <= 0)
+    return;
+
   char buffer[256];
   outputText[0] = '\0'; // Initialize the output text
 
-  for (int i = 0; i < size; i++) {
+  for (int i = 0; i < size && strlen(outputText) < textSize - 20; i++) {
     const char *word = mapToWord(outputs[i]);
-    snprintf(buffer, sizeof(buffer), "%s ", word);
-    strncat(outputText, buffer, textSize - strlen(outputText) - 1);
+    if (!word)
+      word = "unknown";
+    int len = snprintf(buffer, sizeof(buffer), "%s ", word);
+    if (strlen(outputText) + len < textSize) {
+      strcat(outputText, buffer);
+    } else {
+      break;
+    }
   }
 }
 
@@ -4281,11 +4343,24 @@ NetworkPerformanceMetrics *initializePerformanceMetrics(int num_regions) {
 void computeRegionPerformanceMetrics(NetworkPerformanceMetrics *metrics,
                                      Neuron *neurons, float *target_outputs,
                                      int max_neurons) {
+  if (!metrics || !neurons || !target_outputs || metrics->num_regions <= 0) {
+    return;
+  }
+
   int region_size = max_neurons / metrics->num_regions;
+  if (region_size <= 0) {
+    region_size = 1; // Minimum region size
+  }
 
   for (int region = 0; region < metrics->num_regions; region++) {
     int start = region * region_size;
     int end = start + region_size;
+    if (end > max_neurons) {
+      end = max_neurons;
+    }
+    if (start >= end)
+      break;
+
     float total_error = 0.0f;
     float mean_output = 0.0f;
     float variance_sum = 0.0f;
@@ -4294,28 +4369,43 @@ void computeRegionPerformanceMetrics(NetworkPerformanceMetrics *metrics,
     for (int i = start; i < end; i++) {
       mean_output += neurons[i].output;
     }
-    mean_output /= region_size;
+    mean_output /= (end - start);
 
     // Compute error and variance
     for (int i = start; i < end; i++) {
       float error = fabs(neurons[i].output - target_outputs[i]);
       total_error += error;
-      variance_sum += pow(neurons[i].output - mean_output, 2);
+      variance_sum += powf(neurons[i].output - mean_output, 2.0f);
     }
 
-    metrics->region_error_rates[region] = total_error / region_size;
-    metrics->region_output_variance[region] = variance_sum / region_size;
+    metrics->region_error_rates[region] = total_error / (end - start);
+    metrics->region_output_variance[region] = variance_sum / (end - start);
     metrics->region_performance_scores[region] = 1.0f / (1.0f + total_error);
   }
 }
 
 MetaController *initializeMetaController(int num_regions) {
+  if (num_regions <= 0) {
+    return NULL;
+  }
+
   MetaController *controller = malloc(sizeof(MetaController));
+  if (!controller)
+    return NULL;
+
   controller->meta_learning_rate = 0.01;
   controller->exploration_factor = 0.1;
   controller->num_regions = num_regions;
   controller->region_importance_scores = calloc(num_regions, sizeof(float));
   controller->learning_efficiency_history = calloc(num_regions, sizeof(float));
+
+  if (!controller->region_importance_scores ||
+      !controller->learning_efficiency_history) {
+    free(controller->region_importance_scores);
+    free(controller->learning_efficiency_history);
+    free(controller);
+    return NULL;
+  }
 
   // Initialize with equal importance
   for (int i = 0; i < num_regions; i++) {
@@ -4346,6 +4436,10 @@ MetacognitionMetrics *initializeMetacognitionMetrics() {
 
 // Initialize meta learning state
 MetaLearningState *initializeMetaLearningState(int num_regions) {
+  if (num_regions <= 0) {
+    return NULL;
+  }
+
   MetaLearningState *state = malloc(sizeof(MetaLearningState));
   if (!state)
     return NULL;
@@ -4354,6 +4448,7 @@ MetaLearningState *initializeMetaLearningState(int num_regions) {
   state->exploration_rate = 0.2f;
   state->stability_index = 1.0f;
   state->current_phase = 0;
+  state->num_regions_allocated = num_regions;
 
   // Allocate and initialize priority weights
   state->priority_weights = malloc(sizeof(float) * num_regions);
@@ -4370,6 +4465,10 @@ MetaLearningState *initializeMetaLearningState(int num_regions) {
 }
 
 float computePerformanceVariance(float *history, int length) {
+  if (!history || length <= 0) {
+    return 0.0f;
+  }
+
   float mean = 0.0f;
   float variance = 0.0f;
 
@@ -4393,9 +4492,23 @@ float computeAdaptiveRate(NetworkPerformanceMetrics *performance,
                           float *history) {
   float recent_trend = 0.0f;
 
+  if (!performance || !history) {
+    return 0.1f;
+  }
+
   // Calculate trend from recent performance
   for (int i = 1; i < HISTORY_LENGTH; i++) {
     recent_trend += history[i] - history[i - 1];
+  }
+
+  // Use performance metrics to modulate the trend
+  if (performance->num_regions > 0) {
+    float avg_performance = 0.0f;
+    for (int i = 0; i < performance->num_regions; i++) {
+      avg_performance += performance->region_performance_scores[i];
+    }
+    avg_performance /= performance->num_regions;
+    recent_trend *= avg_performance;
   }
 
   // Normalize trend and convert to adaptation rate
@@ -4407,11 +4520,17 @@ float computeAdaptiveRate(NetworkPerformanceMetrics *performance,
 
 float computeErrorAwareness(NetworkPerformanceMetrics *performance,
                             float *history) {
+  if (!performance || !history || performance->num_regions <= 0 ||
+      HISTORY_LENGTH <= 0) {
+    return 0.0f;
+  }
+
   float total_error = 0.0f;
   float max_error = 0.0f;
+  int num_regions = performance->num_regions;
 
   // Calculate total and maximum prediction errors
-  for (int i = 0; i < performance->num_regions; i++) {
+  for (int i = 0; i < num_regions; i++) {
     float error = fabs(performance->region_performance_scores[i] -
                        history[i % HISTORY_LENGTH]);
     total_error += error;
@@ -4419,16 +4538,23 @@ float computeErrorAwareness(NetworkPerformanceMetrics *performance,
   }
 
   // Normalize error awareness
-  float avg_error = total_error / performance->num_regions;
+  float avg_error = total_error / num_regions;
   return (avg_error + max_error) / 2.0f;
 }
 
 float evaluateContextRelevance(MetaController *controller,
                                NetworkPerformanceMetrics *performance) {
+  if (!controller || !performance || controller->num_regions <= 0) {
+    return 0.0f;
+  }
+
   float total_relevance = 0.0f;
+  int max_regions = (controller->num_regions < performance->num_regions)
+                        ? controller->num_regions
+                        : performance->num_regions;
 
   // Compute weighted relevance across regions
-  for (int i = 0; i < controller->num_regions; i++) {
+  for (int i = 0; i < max_regions; i++) {
     float region_performance = performance->region_performance_scores[i];
     float importance = controller->region_importance_scores[i];
     total_relevance += region_performance * importance;
@@ -4437,9 +4563,16 @@ float evaluateContextRelevance(MetaController *controller,
   return total_relevance / controller->num_regions;
 }
 
-void mutatePathParameters(DecisionPath *path, int max_neurons, int step) {
+void mutatePathParameters(DecisionPath *path, int max_neurons) {
+  if (!path || max_neurons <= 0) {
+    return;
+  }
+
   // Randomly modify some weights and connections
   int num_mutations = max_neurons / 10; // Mutate 10% of parameters
+  if (num_mutations <= 0) {
+    num_mutations = 1;
+  }
 
   for (int i = 0; i < num_mutations; i++) {
     int idx = rand() % (max_neurons * MAX_CONNECTIONS);
@@ -4456,12 +4589,35 @@ DecisionPath generateDecisionPath(Neuron *neurons, float *weights,
                                   int max_neurons, float explore_rate) {
   DecisionPath path;
 
+  if (max_neurons <= 0) {
+    path.states = NULL;
+    path.weights = NULL;
+    path.connections = NULL;
+    path.num_steps = 0;
+    path.score = 0.0f;
+    path.max_neurons = 0;
+    return path;
+  }
+
   // Allocate memory for path components
   path.states = malloc(sizeof(float) * max_neurons * MAX_DECISION_STEPS);
   path.weights = malloc(sizeof(float) * max_neurons * MAX_CONNECTIONS);
   path.connections = malloc(sizeof(uint32_t) * max_neurons * MAX_CONNECTIONS);
   path.num_steps = 0;
   path.score = 0.0f;
+  path.max_neurons = max_neurons;
+
+  if (!path.states || !path.weights || !path.connections) {
+    free(path.states);
+    free(path.weights);
+    free(path.connections);
+    path.states = NULL;
+    path.weights = NULL;
+    path.connections = NULL;
+    path.num_steps = 0;
+    path.max_neurons = 0;
+    return path;
+  }
 
   // Copy initial states and parameters
   memcpy(path.weights, weights, sizeof(float) * max_neurons * MAX_CONNECTIONS);
@@ -4480,7 +4636,7 @@ DecisionPath generateDecisionPath(Neuron *neurons, float *weights,
 
     // Update connections and weights with exploration
     if (rand() / (float)RAND_MAX < explore_rate) {
-      mutatePathParameters(&path, max_neurons, step);
+      mutatePathParameters(&path, max_neurons);
     }
 
     path.num_steps++;
@@ -4505,18 +4661,25 @@ DecisionPath selectBestPath(DecisionPath *paths, int num_paths) {
 
 void applyDecisionPath(DecisionPath path, Neuron *neurons, float *weights,
                        uint *connections, float confidence) {
+  if (!neurons || !weights || !connections || !path.states || !path.weights ||
+      !path.connections || path.max_neurons <= 0) {
+    return;
+  }
+
+  int max_neurons = path.max_neurons;
+
   // Apply state changes with confidence-based modulation
   for (int i = 0; i < path.num_steps; i++) {
-    float *target_state = &path.states[i];
+    float *target_state = &path.states[i * max_neurons];
     float modulation = confidence * (1.0f - ((float)i / path.num_steps));
 
-    for (int j = 0; j < MAX_NEURONS; j++) {
+    for (int j = 0; j < max_neurons; j++) {
       neurons[j].state += (target_state[j] - neurons[j].state) * modulation;
     }
   }
 
   // Apply weight and connection changes
-  for (int i = 0; i < MAX_NEURONS * MAX_CONNECTIONS; i++) {
+  for (int i = 0; i < max_neurons * MAX_CONNECTIONS; i++) {
     weights[i] += (path.weights[i] - weights[i]) * confidence;
     if (confidence >
         0.8f) { // Only apply connection changes with high confidence
@@ -4527,26 +4690,41 @@ void applyDecisionPath(DecisionPath path, Neuron *neurons, float *weights,
 
 float evaluatePathQuality(DecisionPath path, MetaLearningState *meta_state,
                           MetacognitionMetrics *metacog) {
+  if (!meta_state || !metacog || path.max_neurons <= 0 || !path.states ||
+      !path.weights) {
+    return 0.0f;
+  }
+
   float quality_score = 0.0f;
   float stability_score = 0.0f;
   float efficiency_score = 0.0f;
+  int max_neurons = path.max_neurons;
 
   // Evaluate state stability
   for (int step = 1; step < path.num_steps; step++) {
     float step_diff = 0.0f;
-    for (int i = 0; i < MAX_NEURONS; i++) {
-      float diff = path.states[step * MAX_NEURONS + i] -
-                   path.states[(step - 1) * MAX_NEURONS + i];
+    for (int i = 0; i < max_neurons; i++) {
+      float diff = path.states[step * max_neurons + i] -
+                   path.states[(step - 1) * max_neurons + i];
       step_diff += diff * diff;
     }
     stability_score += sqrtf(step_diff);
   }
-  stability_score = 1.0f / (1.0f + stability_score / path.num_steps);
+  if (path.num_steps > 1) {
+    stability_score = 1.0f / (1.0f + stability_score / path.num_steps);
+  } else {
+    stability_score = 1.0f;
+  }
 
-  // Evaluate learning efficiency
+  // Evaluate learning efficiency - compare against priority_weights with bounds
+  // check
   float weight_changes = 0.0f;
-  for (int i = 0; i < MAX_NEURONS * MAX_CONNECTIONS; i++) {
-    weight_changes += fabs(path.weights[i] - meta_state->priority_weights[i]);
+  int weights_to_check = max_neurons * MAX_CONNECTIONS;
+  for (int i = 0; i < weights_to_check; i++) {
+    float priority_weight = (i < meta_state->num_regions_allocated)
+                                ? meta_state->priority_weights[i]
+                                : 0.0f;
+    weight_changes += fabs(path.weights[i] - priority_weight);
   }
   efficiency_score = 1.0f / (1.0f + weight_changes);
 
@@ -4560,6 +4738,13 @@ float evaluatePathQuality(DecisionPath path, MetaLearningState *meta_state,
 
 void updateMetaLearningState(MetaLearningState *state, DecisionPath best_path,
                              MetacognitionMetrics *metacog) {
+  if (!state || !metacog || best_path.max_neurons <= 0 || !best_path.states ||
+      !best_path.weights) {
+    return;
+  }
+
+  int max_neurons = best_path.max_neurons;
+
   // Update learning efficiency based on path quality
   float path_efficiency = evaluatePathQuality(best_path, state, metacog);
   state->learning_efficiency =
@@ -4576,24 +4761,31 @@ void updateMetaLearningState(MetaLearningState *state, DecisionPath best_path,
 
   // Update stability index
   float stability_measure = 0.0f;
-  for (int step = 1; step < best_path.num_steps; step++) {
-    float step_stability = 0.0f;
-    for (int i = 0; i < MAX_NEURONS; i++) {
-      float diff = best_path.states[step * MAX_NEURONS + i] -
-                   best_path.states[(step - 1) * MAX_NEURONS + i];
-      step_stability += diff * diff;
+  if (best_path.num_steps > 1) {
+    for (int step = 1; step < best_path.num_steps; step++) {
+      float step_stability = 0.0f;
+      for (int i = 0; i < max_neurons; i++) {
+        float diff = best_path.states[step * max_neurons + i] -
+                     best_path.states[(step - 1) * max_neurons + i];
+        step_stability += diff * diff;
+      }
+      stability_measure += sqrtf(step_stability);
     }
-    stability_measure += sqrtf(step_stability);
+    state->stability_index =
+        1.0f / (1.0f + stability_measure / best_path.num_steps);
+  } else {
+    state->stability_index = 1.0f;
   }
 
-  state->stability_index =
-      1.0f / (1.0f + stability_measure / best_path.num_steps);
-
   // Update priority weights based on path performance
-  for (int i = 0; i < MAX_NEURONS; i++) {
+  int weights_to_update = (state->num_regions_allocated < max_neurons)
+                              ? state->num_regions_allocated
+                              : max_neurons;
+
+  for (int i = 0; i < weights_to_update; i++) {
     float weight_delta = 0.0f;
     for (int step = 0; step < best_path.num_steps; step++) {
-      weight_delta += best_path.states[step * MAX_NEURONS + i];
+      weight_delta += best_path.states[step * max_neurons + i];
     }
     weight_delta /= best_path.num_steps;
 
@@ -4607,14 +4799,17 @@ void updateMetaLearningState(MetaLearningState *state, DecisionPath best_path,
 
 float assessCognitiveLoad(MetaController *controller,
                           NetworkPerformanceMetrics *performance) {
-  float total_complexity = 0.0f;
+  if (!controller || !performance || controller->num_regions <= 0) {
+    return 0.0f;
+  }
+
   float activation_entropy = 0.0f;
   float weight_complexity = 0.0f;
   float temporal_complexity = 0.0f;
 
   for (int i = 0; i < controller->num_regions; i++) {
     float importance = controller->region_importance_scores[i];
-    if (importance > 0) {
+    if (importance > 0.0f) {
       activation_entropy -= importance * log2f(importance);
     }
 
@@ -4648,7 +4843,13 @@ float assessCognitiveLoad(MetaController *controller,
     temporal_complexity += temporal_diff;
   }
 
-  activation_entropy = activation_entropy / log2f(controller->num_regions);
+  float log_term = log2f(controller->num_regions);
+  if (log_term > 0.0f) {
+    activation_entropy = activation_entropy / log_term;
+  } else {
+    activation_entropy = 0.0f;
+  }
+
   weight_complexity = weight_complexity / controller->num_regions;
   temporal_complexity = temporal_complexity / controller->num_regions;
 
@@ -4663,6 +4864,10 @@ float assessCognitiveLoad(MetaController *controller,
 void updateMetacognitionMetrics(MetacognitionMetrics *metacog,
                                 MetaController *controller,
                                 NetworkPerformanceMetrics *performance) {
+  if (!metacog || !controller || !performance) {
+    return;
+  }
+
   float performance_variance =
       computePerformanceVariance(metacog->performance_history, HISTORY_LENGTH);
   metacog->confidence_level = 1.0f / (1.0f + performance_variance);
@@ -4682,6 +4887,10 @@ void updateMetacognitionMetrics(MetacognitionMetrics *metacog,
 void updateMetaControllerPriorities(MetaController *controller,
                                     NetworkPerformanceMetrics *performance,
                                     MetacognitionMetrics *metacog) {
+  if (!controller || !performance || !metacog) {
+    return;
+  }
+
   float performance_trend = 0.0f;
   for (int i = 0; i < HISTORY_LENGTH - 1; i++) {
     performance_trend +=
@@ -4722,11 +4931,22 @@ void updateMetaControllerPriorities(MetaController *controller,
 void applyMetaControllerAdaptations(Neuron *neurons, float *weights,
                                     MetaController *controller,
                                     int max_neurons) {
+  if (!neurons || !weights || !controller || max_neurons <= 0 ||
+      controller->num_regions <= 0) {
+    return;
+  }
+
   int region_size = max_neurons / controller->num_regions;
+  if (region_size <= 0) {
+    return;
+  }
 
   for (int region = 0; region < controller->num_regions; region++) {
     int start = region * region_size;
     int end = start + region_size;
+    if (end > max_neurons) {
+      end = max_neurons;
+    }
     float region_importance = controller->region_importance_scores[region];
 
     // Adjust connection weights based on region importance
@@ -5016,7 +5236,8 @@ void advancedNeuronManagement(Neuron *neurons, uint *connections,
   // Find neurons for potential removal
   float removal_threshold =
       0.7f; // High importance score means poor performance
-  for (int i = 0; i < *num_neurons; i++) {
+  int original_num = *num_neurons; // Store original count before modification
+  for (int i = 0; i < original_num; i++) {
     if (metrics[i].importance_score > removal_threshold) {
       removeUnderperformingNeuron(neurons, connections, weights, num_neurons,
                                   max_neurons, i);
@@ -5107,7 +5328,7 @@ void selectOptimalDecisionPath(Neuron *neurons, float *weights,
   float depth_outcomes[3];
 
   for (int i = 0; i < 3; i++) {
-    Neuron simulation_copy[MAX_NEURONS];
+    Neuron *simulation_copy = malloc(sizeof(Neuron) * max_neurons);
     memcpy(simulation_copy, neurons, sizeof(Neuron) * max_neurons);
 
     simulateFutureStates(simulation_copy, weights, connections, input_tensor,
@@ -5119,6 +5340,7 @@ void selectOptimalDecisionPath(Neuron *neurons, float *weights,
                                  step, relevantMemory, params);
     depth_outcomes[i] =
         evaluateFutureOutcome(simulation_copy, potential_targets, max_neurons);
+    free(simulation_copy);
   }
 
   // Select the simulation depth with the best outcome
@@ -5182,8 +5404,11 @@ ContextNode *createContextNode(const char *name, uint32_t vector_size,
 GlobalContextManager *initializeGlobalContextManager(uint32_t vector_size) {
   GlobalContextManager *manager =
       (GlobalContextManager *)malloc(sizeof(GlobalContextManager));
+  if (!manager)
+    return NULL;
+
   manager->vector_size = vector_size;
-  manager->total_nodes = 1;
+  manager->total_nodes = 1; // Root node
   manager->decay_rate = 0.95f;
   manager->update_threshold = 0.1f;
   manager->max_depth = 5;
@@ -5191,9 +5416,18 @@ GlobalContextManager *initializeGlobalContextManager(uint32_t vector_size) {
 
   // Initialize global context vector
   manager->global_context_vector = (float *)calloc(vector_size, sizeof(float));
+  if (!manager->global_context_vector) {
+    free(manager);
+    return NULL;
+  }
 
   // Create root node
   manager->root = createContextNode("Global", vector_size, NULL);
+  if (!manager->root) {
+    free(manager->global_context_vector);
+    free(manager);
+    return NULL;
+  }
 
   // Initialize default context hierarchy
   ContextNode *goals = createContextNode("Goals", vector_size, manager->root);
@@ -5206,6 +5440,7 @@ GlobalContextManager *initializeGlobalContextManager(uint32_t vector_size) {
   manager->root->children[1] = constraints;
   manager->root->children[2] = environment;
   manager->root->num_children = 3;
+  manager->total_nodes += 3; // Add 3 children to total
 
   return manager;
 }
@@ -5315,8 +5550,13 @@ float evaluateConstraintSatisfaction(ContextNode *constraint, Neuron *neurons,
 
 void updateGlobalContext(GlobalContextManager *manager, Neuron *neurons,
                          uint32_t num_neurons, float *input_tensor) {
+  if (!manager || !manager->root || !neurons)
+    return;
+
   // Extract relevant features from current network state
   float *current_context = (float *)calloc(manager->vector_size, sizeof(float));
+  if (!current_context)
+    return;
 
   // Analyze network activity patterns
   for (uint32_t i = 0; i < manager->vector_size && i < num_neurons; i++) {
@@ -5335,6 +5575,10 @@ void updateGlobalContext(GlobalContextManager *manager, Neuron *neurons,
   if (constraints) {
     float *constraint_state =
         (float *)calloc(manager->vector_size, sizeof(float));
+    if (!constraint_state) {
+      free(current_context);
+      return;
+    }
     // Evaluate current constraint satisfaction
     for (uint32_t i = 0; i < constraints->num_children; i++) {
       float satisfaction = evaluateConstraintSatisfaction(
@@ -5351,15 +5595,21 @@ void updateGlobalContext(GlobalContextManager *manager, Neuron *neurons,
   for (uint32_t i = 0; i < manager->vector_size; i++) {
     manager->global_context_vector[i] = 0;
     float total_weight = 0;
-
     // Weighted combination of all top-level contexts
     for (uint32_t j = 0; j < manager->root->num_children; j++) {
       ContextNode *child = manager->root->children[j];
+
+      // Guard against a corrupt/null child or a state_vector
+      // that was allocated smaller than the manager vector_size
+      if (!child || !child->state_vector ||
+          child->vector_size < manager->vector_size) {
+        continue;
+      }
+
       float weight = child->importance * child->temporal_relevance;
       manager->global_context_vector[i] += child->state_vector[i] * weight;
       total_weight += weight;
     }
-
     if (total_weight > 0) {
       manager->global_context_vector[i] /= total_weight;
     }
@@ -5588,12 +5838,9 @@ float evaluateGoalProgress(Goal *goal, const Neuron *neurons, int neuron_count,
     int valid_neurons = 0;
 
     for (int i = 0; i < neuron_count; i++) {
-      // Only evaluate neurons that have a valid target output
-      if (i < neuron_count) {
-        float error = fabs(neurons[i].output - target_outputs[i]);
-        total_error += error;
-        valid_neurons++;
-      }
+      float error = fabs(neurons[i].output - target_outputs[i]);
+      total_error += error;
+      valid_neurons++;
     }
 
     // Prevent division by zero
@@ -5917,7 +6164,6 @@ float computeConsistencyScore(Neuron *current_neurons,
   return steps_compared > 0 ? consistency / steps_compared : 1.0f;
 }
 
-// Helper function to retrieve most relevant memory
 MemoryEntry *retrieveRelevantMemory(MemorySystem *memorySystem,
                                     Neuron *current_neurons) {
   if (memorySystem->size == 0) {
@@ -5931,14 +6177,19 @@ MemoryEntry *retrieveRelevantMemory(MemorySystem *memorySystem,
   for (int i = 0; i < memorySystem->size; i++) {
     int idx = (memorySystem->head - 1 - i + memorySystem->capacity) %
               memorySystem->capacity;
-    MemoryEntry *memory = &memorySystem->entries[idx];
 
+    if (idx < 0 || idx >= memorySystem->capacity) {
+      continue;
+    }
+
+    MemoryEntry *memory = &memorySystem->entries[idx];
     float similarity = 0.0f;
+
     for (int j = 0; j < MAX_NEURONS; j++) {
-      float diff = fabs(current_neurons[j].output - memory->vector[j]);
+      float diff = fabsf(current_neurons[j].output - memory->vector[j]);
       similarity += (1.0f - diff);
     }
-    similarity /= MAX_NEURONS;
+    similarity /= (float)MAX_NEURONS;
 
     // Weight by memory importance
     similarity *= memory->importance;
@@ -5948,7 +6199,6 @@ MemoryEntry *retrieveRelevantMemory(MemorySystem *memorySystem,
       best_match = memory;
     }
   }
-
   return best_match;
 }
 
@@ -6013,7 +6263,7 @@ float analyzeResponseCoherence(Neuron *neurons, MemorySystem *memorySystem,
   }
 
   // Check consistency with relevant memories but cap their influence
-  MemoryEntry *relevant_memory = retrieveMemory(memorySystem);
+  MemoryEntry *relevant_memory = retrieveRelevantMemory(memorySystem, neurons);
   if (relevant_memory != NULL) {
     float memory_consistency =
         computeMemoryConsistency(neurons, relevant_memory);
@@ -6326,8 +6576,13 @@ float *extractBehavioralPatterns(Neuron *neurons, uint32_t num_neurons) {
   // Calculate activation patterns
   for (uint32_t i = 0; i < PATTERN_SIZE; i++) {
     float pattern_sum = 0.0f;
-    uint32_t neurons_per_pattern = num_neurons / PATTERN_SIZE;
+    uint32_t neurons_per_pattern =
+        (PATTERN_SIZE > 0) ? num_neurons / PATTERN_SIZE : 0;
 
+    if (neurons_per_pattern == 0) {
+      patterns[i] = 0.0f;
+      continue;
+    }
     for (uint32_t j = 0; j < neurons_per_pattern; j++) {
       uint32_t neuron_idx = i * neurons_per_pattern + j;
       if (neuron_idx < num_neurons) {
@@ -6413,15 +6668,18 @@ float computeValueConsistency(float *core_values, uint32_t num_values) {
 }
 
 bool haveCommonPrimeFactors(uint32_t a, uint32_t b) {
-  while (a % 2 == 0 && b % 2 == 0) {
-    return true;
+  if (a == 0 || b == 0) {
+    return false; // 0 has no prime factors
   }
-  for (uint32_t i = 3; i <= sqrt((a > b) ? a : b); i += 2) {
-    if (a % i == 0 && b % i == 0) {
-      return true;
-    }
+  // Compute GCD using Euclidean algorithm
+  uint32_t gcd = a;
+  uint32_t tmp = b;
+  while (tmp != 0) {
+    uint32_t t = gcd % tmp;
+    gcd = tmp;
+    tmp = t;
   }
-  return false;
+  return gcd > 1;
 }
 
 // Function to count the number of differing bits between two numbers
@@ -6662,8 +6920,6 @@ void updateReferenceStates(SelfIdentitySystem *system) {
   free(current_state);
 }
 
-float sigmoid(float x) { return 1.0f / (1.0f + expf(-x)); }
-
 // Compute experience value using weighted encoding
 float computeExperienceValue(float *experience_vector) {
   float weighted_sum = 0.0f;
@@ -6678,15 +6934,17 @@ float computeExperienceValue(float *experience_vector) {
 
   float encoded_value =
       weighted_sum / weight_total; // Normalize with sum of weights
-  return sigmoid(
-      encoded_value); // Apply sigmoid to keep result in a controlled range
+  // Simple sigmoid approximation
+  return 1.0f / (1.0f + expf(-encoded_value));
 }
 
 // Add new experience to history
 void addExperience(SelfIdentitySystem *system, float *experience_vector) {
-  // Shift history window
-  memmove(system->experience_history + 1, system->experience_history,
-          (system->history_size - 1) * sizeof(float));
+  // Shift history window if there's history to shift
+  if (system->history_size > 0) {
+    memmove(system->experience_history + 1, system->experience_history,
+            (system->history_size - 1) * sizeof(float));
+  }
 
   // Add new experience
   system->experience_history[0] = computeExperienceValue(experience_vector);
@@ -6818,8 +7076,8 @@ void updateConfidenceLevel(SelfIdentitySystem *system) {
   if (!system)
     return;
 
-  float recent_coherence =
-      computeRecentCoherence(system->temporal_coherence, 10);
+  float recent_coherence = computeRecentCoherence(system->temporal_coherence,
+                                                  system->coherence_window);
   float value_consistency =
       computeValueConsistency(system->core_values, system->num_core_values);
   float belief_consistency =
@@ -6849,8 +7107,10 @@ void updateConfidenceLevel(SelfIdentitySystem *system) {
 
 // Shift coherence window to make room for new coherence value
 void shiftCoherenceWindow(SelfIdentitySystem *system) {
-  memmove(system->temporal_coherence, system->temporal_coherence + 1,
-          (system->coherence_window - 1) * sizeof(float));
+  if (system->coherence_window > 0) {
+    memmove(system->temporal_coherence, system->temporal_coherence + 1,
+            (system->coherence_window - 1) * sizeof(float));
+  }
 }
 
 // Compress current experience into a summary vector
@@ -6873,8 +7133,11 @@ float *compressExperience(float *current_input, Neuron *neurons,
       }
     }
 
-    compressed[i] = (input_contribution + neuron_contribution) /
-                    (2.0f * inputs_per_experience);
+    float denominator = 2.0f * inputs_per_experience;
+    compressed[i] =
+        (inputs_per_experience > 0)
+            ? (input_contribution + neuron_contribution) / denominator
+            : 0.0f;
   }
 
   return compressed;
@@ -6982,19 +7245,20 @@ bool verifyIdentity(SelfIdentitySystem *system) {
 char *generateIdentityReflection(SelfIdentitySystem *system) {
   char *reflection = (char *)malloc(4096 * sizeof(char));
 
-  sprintf(reflection,
-          "Identity Reflection:\n"
-          "Consistency Score: %.2f\n"
-          "Confidence Level: %.2f\n"
-          "Core Value Stability: %.2f\n"
-          "Belief System Coherence: %.2f\n"
-          "Identity Marker Prominence: %.2f\n"
-          "Temporal Coherence (Last 10 states): %.2f\n",
-          system->consistency_score, system->confidence_level,
-          computeValueConsistency(system->core_values, system->num_core_values),
-          computeBeliefConsistency(system->belief_system, system->num_beliefs),
-          computeMarkerStability(system->identity_markers, system->num_markers),
-          computeRecentCoherence(system->temporal_coherence, 10));
+  snprintf(
+      reflection, 4096,
+      "Identity Reflection:\n"
+      "Consistency Score: %.2f\n"
+      "Confidence Level: %.2f\n"
+      "Core Value Stability: %.2f\n"
+      "Belief System Coherence: %.2f\n"
+      "Identity Marker Prominence: %.2f\n"
+      "Temporal Coherence (Last 10 states): %.2f\n",
+      system->consistency_score, system->confidence_level,
+      computeValueConsistency(system->core_values, system->num_core_values),
+      computeBeliefConsistency(system->belief_system, system->num_beliefs),
+      computeMarkerStability(system->identity_markers, system->num_markers),
+      computeRecentCoherence(system->temporal_coherence, 10));
 
   return reflection;
 }
@@ -7028,6 +7292,7 @@ KnowledgeFilter *initializeKnowledgeFilter(uint32_t initial_capacity) {
                                   .usage_count = 0,
                                   .last_accessed = time(NULL)};
     strncpy(category.name, default_categories[i], 63);
+    category.name[63] = '\0';
     category.feature_vector =
         (float *)calloc(FEATURE_VECTOR_SIZE, sizeof(float));
     filter->categories[filter->num_categories++] = category;
@@ -7156,6 +7421,7 @@ void recordProblemInstance(KnowledgeFilter *filter, const char *description,
                              .timestamp = time(NULL)};
 
   strncpy(problem.description, description, 255);
+  problem.description[255] = '\0';
   problem.feature_vector = (float *)malloc(FEATURE_VECTOR_SIZE * sizeof(float));
   memcpy(problem.feature_vector, feature_vector,
          FEATURE_VECTOR_SIZE * sizeof(float));
@@ -7542,7 +7808,8 @@ SecurityValidationStatus validateCriticalSecurity(const Neuron *neurons,
 
   // Heuristic Execution Flow Analysis
   for (size_t i = 0; i < max_neurons && !status.critical_violation; i++) {
-    for (size_t j = 0; j < neurons[i].num_connections; j++) {
+    for (size_t j = 0; j < neurons[i].num_connections && j < max_connections;
+         j++) {
       // Out-of-bounds connection check
       if (connections[i * max_connections + j] >= max_neurons) {
         status.critical_violation = true;
@@ -7688,8 +7955,8 @@ MemoryProtection validateMemoryAccess(const void *ptr, size_t size) {
     protection.region_size = page_size;
   }
 
-  // Check executable memory
-  protection.is_executable = (mprotect(page_start, page_size, PROT_EXEC) == 0);
+  // Check executable memory (note: mprotect modifies protection, disabled)
+  protection.is_executable = 0;
 
   return protection;
 }
@@ -7742,6 +8009,8 @@ void handleCriticalSecurityViolation(Neuron *neurons, float *weights,
             mem_protection.is_readable, mem_protection.is_writable,
             mem_protection.is_executable, mem_protection.region_size);
     fclose(log_file);
+  } else {
+    fprintf(stderr, "Failed to open security log file\n");
   }
 }
 
@@ -7877,21 +8146,16 @@ IdentityAnalysis analyzeIdentitySystem(const SelfIdentitySystem *system) {
   }
 
   for (uint32_t i = 0; i < system->num_markers; i++) {
-    float marker_avg = 0.0f;
-    uint32_t valid_samples = 0;
-
-    for (uint32_t j = 0; j < system->coherence_window; j++) {
-      if (!isnan(system->temporal_coherence[j]) &&
-          !isinf(system->temporal_coherence[j])) {
-        marker_avg +=
-            fabsf(system->identity_markers[i] - system->temporal_coherence[j]);
-        valid_samples++;
-      }
+    float marker_ref = 0.0f;
+    if (system->verification.reference_state &&
+        (system->num_core_values + system->num_beliefs + i) <
+            system->verification.state_size) {
+      marker_ref =
+          system->verification.reference_state[system->num_core_values +
+                                               system->num_beliefs + i];
     }
-
-    float marker_variance =
-        (valid_samples > 0) ? (marker_avg / valid_samples) : 0.0f;
-    if (marker_variance > system->verification.threshold) {
+    float diff = fabsf(system->identity_markers[i] - marker_ref);
+    if (diff > system->verification.threshold) {
       analysis.marker_conflicts++;
     }
   }
@@ -9546,6 +9810,15 @@ MoralCompass *initializeMoralCompass(int num_principles) {
   }
 
   compass->num_principles = num_principles;
+  if (num_principles < 4) {
+    fprintf(
+        stderr,
+        "initializeMoralCompass: insufficient principles (need >=4, got %d)\n",
+        num_principles);
+    free(compass->principles);
+    free(compass);
+    return NULL;
+  }
   compass->overall_alignment = 0.8f; // Start with reasonable alignment
   compass->confidence_threshold = 0.7f;
   compass->dilemma_count = 0;
@@ -9624,11 +9897,11 @@ void recordDecisionOutcome(MoralCompass *compass, int principle_index,
   if (was_ethical) {
     compass->principles[principle_index].activations++;
     compass->principles[principle_index].adherence =
-        fmin(1.0f, compass->principles[principle_index].adherence + 0.01f);
+        fminf(1.0f, compass->principles[principle_index].adherence + 0.01f);
   } else {
     compass->principles[principle_index].violations++;
     compass->principles[principle_index].adherence =
-        fmax(0.0f, compass->principles[principle_index].adherence - 0.05f);
+        fmaxf(0.0f, compass->principles[principle_index].adherence - 0.05f);
   }
 
   // Recalculate overall alignment
@@ -9771,28 +10044,48 @@ char *generateEthicalReflection(MoralCompass *compass) {
     return NULL;
   }
 
-  sprintf(reflection, "Ethical Reflection Report\n");
-  sprintf(reflection + strlen(reflection), "========================\n\n");
-  sprintf(reflection + strlen(reflection),
-          "Overall Ethical Alignment: %.2f\n\n", compass->overall_alignment);
+  int off = 0;
+  int rem = 2048;
+  int n;
 
-  sprintf(reflection + strlen(reflection), "Principle Adherence:\n");
+  n = snprintf(reflection + off, rem, "Ethical Reflection Report\n");
+  off += n;
+  rem -= n;
+  n = snprintf(reflection + off, rem, "========================\n\n");
+  off += n;
+  rem -= n;
+  n = snprintf(reflection + off, rem, "Overall Ethical Alignment: %.2f\n\n",
+               compass->overall_alignment);
+  off += n;
+  rem -= n;
+
+  n = snprintf(reflection + off, rem, "Principle Adherence:\n");
+  off += n;
+  rem -= n;
   for (int i = 0; i < compass->num_principles; i++) {
-    sprintf(reflection + strlen(reflection), "- %s: %.2f (Importance: %.2f)\n",
-            compass->principles[i].description,
-            compass->principles[i].adherence,
-            compass->principles[i].importance);
+    n = snprintf(reflection + off, rem, "- %s: %.2f (Importance: %.2f)\n",
+                 compass->principles[i].description,
+                 compass->principles[i].adherence,
+                 compass->principles[i].importance);
+    off += n;
+    rem -= n;
   }
 
-  sprintf(reflection + strlen(reflection), "\nEthical Performance Metrics:\n");
-  sprintf(reflection + strlen(reflection),
-          "- Ethical dilemmas encountered: %d\n", compass->dilemma_count);
-  sprintf(reflection + strlen(reflection),
-          "- Successfully resolved dilemmas: %d\n", compass->resolution_count);
-  sprintf(reflection + strlen(reflection), "- Resolution rate: %.1f%%\n",
-          compass->dilemma_count > 0 ? (float)compass->resolution_count *
-                                           100.0f / compass->dilemma_count
-                                     : 0.0f);
+  n = snprintf(reflection + off, rem, "\nEthical Performance Metrics:\n");
+  off += n;
+  rem -= n;
+  n = snprintf(reflection + off, rem, "- Ethical dilemmas encountered: %d\n",
+               compass->dilemma_count);
+  off += n;
+  rem -= n;
+  n = snprintf(reflection + off, rem, "- Successfully resolved dilemmas: %d\n",
+               compass->resolution_count);
+  off += n;
+  rem -= n;
+  n = snprintf(reflection + off, rem, "- Resolution rate: %.1f%%\n",
+               compass->dilemma_count > 0 ? (float)compass->resolution_count *
+                                                100.0f / compass->dilemma_count
+                                          : 0.0f);
   return reflection;
 }
 
@@ -9989,12 +10282,14 @@ void integrateEthicsIntoUpdate(MoralCompass *compass, EmotionalSystem *emo,
 }
 
 void freeMoralCompass(MoralCompass *compass) {
-  if (compass) {
-    if (compass->principles) {
-      free(compass->principles);
-    }
-    free(compass);
+  if (!compass)
+    return;
+
+  if (compass->principles) {
+    free(compass->principles);
   }
+
+  free(compass);
 }
 
 AffectiveSystem *initializeAffectiveSystem(uint32_t embed_dim) {
@@ -10087,7 +10382,8 @@ uint32_t findNearestAttractor(AffectiveSystem *sys, float *context) {
 
     float basin_pull =
         attr->basin_strength * (1.0f + attr->visit_count * 0.01f);
-    dist /= basin_pull;
+    if (basin_pull > 0.0f)
+      dist /= basin_pull;
 
     if (dist < min_dist) {
       min_dist = dist;
@@ -10609,9 +10905,9 @@ void printAttractorAnalysis(AffectiveSystem *sys) {
 
     printf("  Linked to: ");
     for (uint32_t j = 0; j < 5; j++) {
-      if (attr->linked_attractors[j] != UINT32_MAX) {
-        printf("%s(%.2f) ",
-               sys->attractors[attr->linked_attractors[j]].attractor_name,
+      uint32_t linked = attr->linked_attractors[j];
+      if (linked != UINT32_MAX && linked < sys->num_attractors) {
+        printf("%s(%.2f) ", sys->attractors[linked].attractor_name,
                attr->transition_probabilities[j]);
       }
     }
@@ -10730,7 +11026,7 @@ void detectEmotionalTriggers(EmotionalSystem *system, Neuron *neurons,
                              unsigned int timestamp, float satisfaction,
                              AffectiveSystem *aff_sys,
                              SocialSystem *social_sys) {
-  if (num_neurons <= 0) {
+  if (num_neurons <= 0 || !target_outputs) {
     updateEmotionalMemory(system);
     return;
   }
@@ -11127,7 +11423,6 @@ ImaginationScenario createScenario(Neuron *neurons, MemorySystem *memory_system,
   scenario.divergence_factor = divergence;
 
   // Random creativity level between 0.5 and 1.0 with proper seeding
-  srand((unsigned int)time(NULL)); // Properly seed random generator
   scenario.creativity_level = 0.5f + ((float)rand() / RAND_MAX) * 0.5f;
 
   // Generate base vector from current neural state
@@ -11273,9 +11568,10 @@ void evaluateScenarioPlausibility(ImaginationScenario *scenario,
 
   // Cap num_outcomes to a reasonable value to prevent overruns
   int valid_outcomes = scenario->num_outcomes;
-  if (valid_outcomes <= 0 || valid_outcomes > 10) {
-    valid_outcomes =
-        (valid_outcomes <= 0) ? 0 : 10; // Maximum 10 outcomes in struct
+  if (valid_outcomes <= 0) {
+    valid_outcomes = 0;
+  } else if (valid_outcomes > MAX_OUTCOMES_PER_SCENARIO) {
+    valid_outcomes = MAX_OUTCOMES_PER_SCENARIO;
   }
 
   if (valid_outcomes <= 0) {
@@ -11523,8 +11819,12 @@ bool isScenarioCoherent(ImaginationScenario *scenario, float threshold) {
   // Calculate average distance between consecutive outcomes
   float total_distance = 0.0f;
   int comparison_count = 0;
+  int valid_outcomes =
+      (scenario->num_outcomes > MAX_OUTCOMES_PER_SCENARIO)
+          ? MAX_OUTCOMES_PER_SCENARIO
+          : (scenario->num_outcomes < 0 ? 0 : scenario->num_outcomes);
 
-  for (int i = 0; i < scenario->num_outcomes - 1; i++) {
+  for (int i = 0; i < valid_outcomes - 1; i++) {
     float distance = 0.0f;
 
     for (int j = 0; j < MEMORY_VECTOR_SIZE; j++) {
@@ -11603,6 +11903,8 @@ SocialSystem *initializeSocialSystem(int max_interactions, int max_models) {
 }
 
 void updateEmpathy(SocialSystem *system, EmotionalSystem *emotional_system) {
+  if (emotional_system == NULL)
+    return;
   float emotion_diff = 0.0f;
 
   // Calculate difference between system's emotions and observed emotions
@@ -11666,8 +11968,8 @@ void updatePersonModel(SocialSystem *system, int person_id,
 
     // Initialize new model
     system->person_models[model_index].person_id = person_id;
-    sprintf(system->person_models[model_index].person_name, "Person%d",
-            person_id);
+    snprintf(system->person_models[model_index].person_name, 32, "Person%d",
+             person_id);
     system->person_models[model_index].prediction_confidence = 0.3f;
     system->person_models[model_index].relationship_quality = 0.5f;
     system->person_models[model_index].trust_level = 0.3f;
@@ -11798,9 +12100,13 @@ void recordSocialInteraction(SocialSystem *system, int person_id,
     // Free the context string of the oldest interaction
     free(system->interactions[0].context);
 
-    for (int i = 0; i < system->max_interactions - 1; i++) {
-      system->interactions[i] = system->interactions[i + 1];
-    }
+    // Shift all interactions down by one using memmove to properly handle
+    // overlapping memory
+    memmove(&system->interactions[0], &system->interactions[1],
+            (system->max_interactions - 1) * sizeof(SocialInteraction));
+
+    // Clear the last slot to prevent duplicate pointer issues
+    system->interactions[system->max_interactions - 1].context = NULL;
     system->interaction_count = system->max_interactions - 1;
   }
 
@@ -11816,7 +12122,15 @@ void recordSocialInteraction(SocialSystem *system, int person_id,
       '\0'; // Ensure null termination
 
   // Allocate and copy context
-  system->interactions[idx].context = strdup(context);
+  if (context != NULL) {
+    system->interactions[idx].context = strdup(context);
+  } else {
+    system->interactions[idx].context = strdup("");
+  }
+  if (system->interactions[idx].context == NULL) {
+    fprintf(stderr, "Failed to allocate memory for interaction context\n");
+    system->interactions[idx].context = NULL;
+  }
 
   system->interaction_count++;
 
@@ -11863,7 +12177,8 @@ void predictBehavior(SocialSystem *system, int person_id, const char *context,
     // Find similar past interactions with this person
     float context_influence = 0.0f;
     for (int i = 0; i < system->interaction_count; i++) {
-      if (system->interactions[i].person_id == person_id) {
+      if (system->interactions[i].person_id == person_id &&
+          system->interactions[i].context != NULL && context != NULL) {
         // Simple context similarity check (in real implementation, use NLP)
         if (strstr(system->interactions[i].context, context) != NULL) {
           // More recent interactions have more influence
@@ -11926,7 +12241,10 @@ void applySocialInfluence(SocialSystem *system, Neuron *neurons, float *weights,
         neurons[neuron_idx].output * (1.0f - 0.5f * social_factor) +
         0.5f * social_factor;
 
-    for (int j = 0; j < 10 && j < MAX_CONNECTIONS; j++) {
+    int conn_limit = (neurons[neuron_idx].num_connections < MAX_CONNECTIONS)
+                         ? neurons[neuron_idx].num_connections
+                         : MAX_CONNECTIONS;
+    for (int j = 0; j < conn_limit; j++) {
       int conn_idx = neuron_idx * MAX_CONNECTIONS + j;
       /*
        * Weight update now has a stronger social pull:
@@ -11946,43 +12264,60 @@ char *generateSocialFeedback(SocialSystem *system, const char *context) {
 
   // Generate different types of feedback based on social metrics
   if (system->empathy_level < 0.4f) {
-    sprintf(feedback,
-            "Consider the emotional impact of actions on others. Context: %s",
-            context);
+    snprintf(feedback, 256,
+             "Consider the emotional impact of actions on others. Context: %s",
+             context ? context : "unknown");
   } else if (system->negotiation_skill < 0.4f) {
-    sprintf(feedback,
-            "Look for win-win solutions when conflicts arise. Context: %s",
-            context);
+    snprintf(feedback, 256,
+             "Look for win-win solutions when conflicts arise. Context: %s",
+             context ? context : "unknown");
   } else if (system->behavior_prediction_accuracy < 0.4f) {
-    sprintf(
-        feedback,
+    snprintf(
+        feedback, 256,
         "Pay closer attention to patterns in others' behaviors. Context: %s",
-        context);
+        context ? context : "unknown");
   } else if (system->social_awareness < 0.4f) {
-    sprintf(feedback,
-            "Consider broader social norms and expectations. Context: %s",
-            context);
+    snprintf(feedback, 256,
+             "Consider broader social norms and expectations. Context: %s",
+             context ? context : "unknown");
   } else {
-    sprintf(feedback,
-            "Social skills developing well. Continue practicing in various "
-            "contexts. Current context: %s",
-            context);
+    snprintf(feedback, 256,
+             "Social skills developing well. Continue practicing in various "
+             "contexts. Current context: %s",
+             context ? context : "unknown");
   }
 
   return feedback;
 }
 
-void freeSocialSystem(SocialSystem *system) {
-  if (system == NULL)
+void free_social_interaction(SocialInteraction *interaction) {
+  if (!interaction)
     return;
 
-  // Free all interaction contexts
-  for (int i = 0; i < system->interaction_count; i++) {
-    free(system->interactions[i].context);
+  if (interaction->context) {
+    free(interaction->context);
+    interaction->context = NULL;
+  }
+}
+
+void freeSocialSystem(SocialSystem *system) {
+  if (!system)
+    return;
+
+  // Free interactions
+  if (system->interactions) {
+    for (int i = 0; i < system->interaction_count; i++) {
+      if (system->interactions[i].context) {
+        free(system->interactions[i].context);
+      }
+    }
+    free(system->interactions);
   }
 
-  free(system->interactions);
-  free(system->person_models);
+  if (system->person_models) {
+    free(system->person_models);
+  }
+
   free(system);
 }
 
@@ -12069,7 +12404,7 @@ void detectSpecializations(NeuronSpecializationSystem *system, Neuron *neurons,
       float last_activation = 0.0f;
       int activation_changes = 0;
 
-      if (previous_outputs != NULL) {
+      if (previous_outputs != NULL && previous_states != NULL) {
         // Calculate how consistently the neuron changes between activations
         float current_diff = fabs(neurons[i].output - previous_outputs[i]);
 
@@ -12259,7 +12594,7 @@ void applySpecializations(NeuronSpecializationSystem *system, Neuron *neurons,
       // Enhance context integration by increasing connection influence
       for (unsigned int j = 0;
            j < neurons[neuron_id].num_connections && j < max_connections; j++) {
-        int connection_idx = neuron_id * max_connections + j;
+        int connection_idx = neuron_id * MAX_CONNECTIONS + j;
         int target = connections[connection_idx];
         weights[connection_idx] *= (1.0f + 0.1f * boost_factor);
       }
@@ -12309,12 +12644,15 @@ void updateSpecializationImportance(NeuronSpecializationSystem *system,
 
     // Calculate contribution to overall performance
     float activation_variance = 0.0f;
-    float prev = system->neurons[i].activation_history[0];
+    int start_idx =
+        system->neurons[i].history_index; // oldest entry is at history_index
+    float prev = system->neurons[i].activation_history[start_idx];
 
     for (int j = 1; j < 50; j++) {
-      activation_variance +=
-          fabs(system->neurons[i].activation_history[j] - prev);
-      prev = system->neurons[i].activation_history[j];
+      int idx = (start_idx + j) % 50;
+      float curr = system->neurons[i].activation_history[idx];
+      activation_variance += fabs(curr - prev);
+      prev = curr;
     }
     activation_variance /= 49.0f;
 
@@ -12402,7 +12740,7 @@ float evaluateSpecializationEffectiveness(NeuronSpecializationSystem *system,
   // Calculate specialization diversity - higher is better
   float type_diversity = 0.0f;
   for (int i = 1; i < MAX_SPECIALIZATIONS; i++) {
-    if (system->type_distribution[i] > 0.0f) {
+    if (system->type_distribution[i] > 0.0001f) {
       type_diversity -=
           system->type_distribution[i] * logf(system->type_distribution[i]);
     }
@@ -12466,12 +12804,6 @@ void printSpecializationStats(NeuronSpecializationSystem *system) {
            system->neurons[idx].importance_factor,
            system->neurons[idx].specialization_score,
            system->neurons[idx].avg_activation);
-  }
-}
-
-void freeSpecializationSystem(NeuronSpecializationSystem *system) {
-  if (system != NULL) {
-    free(system);
   }
 }
 
@@ -14100,16 +14432,134 @@ void freeDatasetLoader(DatasetLoader *loader) {
   if (!loader)
     return;
 
-  for (int i = 0; i < loader->num_samples; i++) {
-    free(loader->samples[i]);
+  if (loader->samples) {
+    for (int i = 0; i < loader->num_samples; i++) {
+      if (loader->samples[i]) {
+        free(loader->samples[i]);
+      }
+    }
+    free(loader->samples);
   }
-  free(loader->samples);
-  free(loader->labels);
+
+  if (loader->labels) {
+    free(loader->labels);
+  }
+
   free(loader);
 }
 
 int getDatasetProgress(DatasetLoader *loader) {
   return (loader->current_index * 100) / loader->num_samples;
+}
+
+void free_semantic_cluster(SemanticCluster *cluster) {
+  if (!cluster)
+    return;
+
+  free(cluster->vector);
+
+  free(cluster->activation);
+
+  cluster->size = 0;
+  cluster->coherence = 0.0f;
+}
+
+void freeDynamicClusterSystem(DynamicClusterSystem *c) {
+  if (!c)
+    return;
+
+  for (unsigned int i = 0; i < c->num_clusters; i++) {
+    free(c->clusters[i].vector);
+    free(c->clusters[i].activation);
+  }
+
+  free(c->clusters);
+  free(c->similarity_matrix);
+}
+
+void freeWorkingMemorySystem(WorkingMemorySystem *wm) {
+  if (!wm)
+    return;
+
+  free(wm->focus.entries);
+  free(wm->active.entries);
+
+  freeDynamicClusterSystem(&wm->clusters);
+
+  free(wm->global_context);
+}
+
+void freeContextNode(ContextNode *node) {
+  if (!node)
+    return;
+
+  for (uint32_t i = 0; i < node->num_children; i++) {
+    freeContextNode(node->children[i]);
+  }
+
+  free(node->children);
+  free(node->state_vector);
+  free(node->name);
+  free(node);
+}
+
+void freeKnowledgeFilter(KnowledgeFilter *k) {
+  if (!k)
+    return;
+
+  for (uint32_t i = 0; i < k->num_categories; i++) {
+    free(k->categories[i].feature_vector);
+  }
+
+  free(k->categories);
+
+  for (uint32_t i = 0; i < k->num_problems; i++) {
+    free(k->problem_history[i].feature_vector);
+  }
+
+  free(k->problem_history);
+  free(k->category_similarity_matrix);
+}
+
+void freeGlobalContextManager(GlobalContextManager *m) {
+  if (!m)
+    return;
+
+  freeContextNode(m->root);
+  free(m->global_context_vector);
+}
+
+void freeAffectiveSystem(AffectiveSystem *a) {
+  if (!a)
+    return;
+
+  free(a->attractors);
+  free(a->affective_embeddings);
+  free(a->bonds);
+}
+
+void freeGoalSystem(GoalSystem *g) {
+  if (!g)
+    return;
+  free(g->goals);
+}
+
+void freeSelfIdentitySystem(SelfIdentitySystem *s) {
+  if (!s)
+    return;
+
+  free(s->core_values);
+  free(s->belief_system);
+  free(s->identity_markers);
+  free(s->experience_history);
+  free(s->behavioral_patterns);
+  free(s->temporal_coherence);
+
+  if (s->verification.reference_state) {
+    free(s->verification.reference_state);
+  }
+
+  free(s);
 }
 
 int main(int argc, char *argv[]) {
@@ -15753,29 +16203,29 @@ int main(int argc, char *argv[]) {
 
   // Cleanup
   freeDatasetLoader(dataset);
+  freeWorkingMemorySystem(working_memory);
   freeMemorySystem(memorySystem);
   freeMoralCompass(moralCompass);
   freeEmotionalSystem(emotional_system);
   freeImaginationSystem(imagination_system);
   freeSocialSystem(social_system);
-  freeSpecializationSystem(specialization_system);
+  freeAffectiveSystem(aff_sys);
+  freeGlobalContextManager(contextManager);
+  freeKnowledgeFilter(knowledge_filter);
+  freeGoalSystem(goalSystem);
+  freeSelfIdentitySystem(identity_system);
   cleanupEmbeddings();
   free(input_tensor);
   free(stateHistory);
   free(system_params);
-  free(working_memory);
   free(performance_history);
-  free(contextManager);
   free(performanceMetrics);
   free(metaController);
   free(previous_outputs);
-  free(goalSystem);
   free(motivation);
   free(reflection_params);
-  free(identity_system);
-  free(knowledge_filter);
   free(metacognition);
   free(meta_learning_state);
-  free(aff_sys);
+  free(specialization_system);
   return 0;
 }
