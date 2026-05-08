@@ -3,17 +3,10 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
-2. [Architecture Overview](#architecture-overview)
-3. [Key Components](#key-components)
-4. [Key Functions](#key-functions)
-5. [Memory System](#memory-system)
-6. [Dynamic Parameters](#dynamic-parameters)
-7. [Performance Metrics](#performance-metrics)
-8. [Optimization](#optimization)
-9. [Usage](#usage)
-10. [API Reference](#api-reference)
-11. [Algorithm explanations and mathematics](#algorithm-and-mathematics)
-12. [Training mechanism](#neural-web-training-mechanism)
+2. [Key Components](#key-components)
+3. [Key Functions](#key-functions)
+4. [An idea of a neural web](https://github.com/Okerew/larkos/blob/main/Documents/an_idea_of_a_neural_web.pdf)
+5. [Neural Web training mechanism](https://github.com/Okerew/larkos/blob/main/Documents/training_example.md)
 
 ## Introduction
 
@@ -487,6 +480,80 @@ typedef struct {
 } MoralCompass;
 ```
 
+### Affective system
+
+The affective system servers as en extension of the emotion system allowing for more complex emotional simulation.
+
+```c
+typedef struct {
+  uint32_t entity_id;
+  char entity_name[64];
+  float attachment_strength;
+  float trust;
+  float familiarity;
+  float dependency;
+  float care_investment;
+  float loss_cost;
+  uint32_t shared_history_index;
+  float emotional_resonance;
+  float conflict_history;
+  uint32_t interaction_count;
+  float last_interaction_valence;
+  float predicted_behavior_alignment;
+  float emotional_debt;
+} AttachmentBond;
+
+typedef struct {
+  float valence;
+  float arousal;
+  float dominance;
+  float complexity;
+  float temporal_depth;
+  uint32_t duration_steps;
+  float stability;
+  float momentum[3];
+} EmotionVector;
+
+typedef struct {
+  uint32_t attractor_id;
+  char attractor_name[64];
+  EmotionVector center_point;
+  float basin_strength;
+  float entry_threshold;
+  float exit_threshold;
+  float stability_factor;
+  uint32_t visit_count;
+  float average_duration;
+  float *context_weights;
+  uint32_t context_dim;
+  bool is_pathological;
+  float reinforcement_rate;
+  uint32_t linked_attractors[5];
+  float transition_probabilities[5];
+} EmotionAttractor;
+
+typedef struct {
+  EmotionVector current_state;
+  EmotionVector base_state;
+  EmotionAttractor *attractors;
+  uint32_t num_attractors;
+  uint32_t current_attractor_id;
+  uint32_t steps_in_current_attractor;
+  EmotionVector history[EMOTION_HISTORY_SIZE];
+  uint32_t history_index;
+  float *affective_embeddings;
+  uint32_t embedding_dim;
+  float plasticity;
+  float self_complexity;
+  AttachmentBond *bonds;
+  uint32_t num_bonds;
+  uint32_t max_bonds;
+  float relational_bias;
+  float predictive_commitment_weight;
+  float subconscious_influence;
+} AffectiveSystem;
+```
+
 ### Emotion system
 
 The emotion system allows the network to express emotions. It allows the network to express emotions and get answers
@@ -722,6 +789,24 @@ typedef struct {
 - #### `adaptEthicalFramework(MoralCompass *compass, float learning_rate)` Adapts the ethical framework based on the current state of the network. Adjusts the importance of principles based on their violations and activations.
 - #### `freeMoralCompass(MoralCompass *compass)` Frees the memory allocated for the moral compass. Releases the memory used by the moral compass.
 
+## Affective System
+
+- #### `float computeEmotionDistance(EmotionVector *a, EmotionVector *b)` Computes the distance between two emotion vectors. Calculates the difference across valence, arousal, dominance, complexity, and temporal depth dimensions.
+- #### `void updateEmotionMomentum(EmotionVector *current, EmotionVector *target, float dt)` Updates emotion momentum based on target emotion. Adjusts current emotion state using momentum forces toward the target state.
+- #### `uint32_t findNearestAttractor(AffectiveSystem *sys, float *context)` Finds the nearest emotion attractor to the current state. Searches attractors and considers context alignment and basin strength to determine the closest match.
+- #### `void updateAttractorDynamics(AffectiveSystem *sys, float *context, uint32_t step)` Updates attractor dynamics based on context and current state. Manages transitions between attractors, updates visit counts, and adjusts emotional state toward attractor center.
+- #### `AttachmentBond *findOrCreateBond(AffectiveSystem *sys, uint32_t entity_id, const char *name)` Finds or creates an attachment bond with a specific entity. Returns existing bond or initializes a new one with default attachment parameters.
+- #### `void updateAttachmentBond(AffectiveSystem *sys, AttachmentBond *bond, float interaction_valence, float behavior_alignment, float emotional_exchange)` Updates an attachment bond based on interaction outcomes. Adjusts trust, familiarity, emotional resonance, conflict history, and attachment strength.
+- #### `void reshapeEmbeddingsWithEmotion(AffectiveSystem *sys, float *embeddings, uint32_t embed_dim)` Reshapes embeddings based on current emotional state. Modifies input embeddings using valence, arousal, dominance, and attractor influences.
+- #### `void integrateAttachmentsIntoIdentity(AffectiveSystem *aff, float *identity_core_values, uint32_t num_values)` Integrates attachment bonds into the identity system. Updates core values based on care investment, trust, and loss cost from bonds.
+- #### `void updatePredictiveCommitment(AffectiveSystem *aff, SocialSystem *social_sys, float prediction_error)` Updates predictive commitment based on prediction error. Adjusts commitment weight and triggers conflict emotions when predictions fail.
+- #### `void updateAffectiveComplexity(AffectiveSystem *sys, uint32_t step)` Updates affective complexity based on recent history. Analyzes emotional diversity, conflict history, and subconscious influence to adjust complexity.
+- #### `void reinforceAttractorFromBond(AffectiveSystem *sys, AttachmentBond *bond, bool positive_interaction)` Reinforces an attractor based on bond interaction. Strengthens basin and stability for current attractor during significant bond interactions.
+- #### `float h_iga(SocialSystem *social_sys, AffectiveSystem *aff_sys, EmotionalSystem *emo_sys, int person_id)` Models the gap between performed emotion and actual affective state (social mask layer). Returns mask intensity based on social awareness, empathy, and relationship pressure.
+- #### `void simulateEmotionalTrajectory(AffectiveSystem *sys, SocialSystem *social_sys, float *context, int steps)` Simulates emotional trajectory over time. Runs emotional dynamics, attractor transitions, and social masking over specified steps.
+- #### `void printAttractorAnalysis(AffectiveSystem *sys)` Prints analysis of emotion attractor basins. Displays basin strength, visit counts, duration, pathology status, and linked attractors.
+- #### `void freeAffectiveSystem(AffectiveSystem *a)` Frees memory allocated for the affective system. Releases memory used by attractors, affective embeddings, and attachment bonds.
+
 ## Emotion System
 
 - #### `void freeEmotionalSystem(EmotionalSystem *system)` Frees the memory allocated for the emotional system. Releases the memory used by the emotional system.
@@ -787,6 +872,7 @@ typedef struct {
 - #### `initializeMetaLearningState(int size)` Initializes the meta-learning state. Sets up the meta-learning state with a specified size.
 - #### `createWorkingMemorySystem(int capacity)` Creates a working memory system. Sets up a working memory system with a specified capacity.
 - #### `initializeMoralCompass(int num_principles)` Initializes the moral compass. Sets up the moral compass with a specified number of principles.
+- #### `AffectiveSystem *initializeAffectiveSystem(uint32_t embed_dim)` Initializes a new affective system with a specified embedding dimension. Sets up emotion vectors, attractors, attachment bonds, and affective embeddings with default values.
 - #### `EmotionalSystem *initializeEmotionalSystem()` Initializes the emotional system. Sets up the emotional system with default values.
 - #### `ImaginationSystem* initializeImaginationSystem(float creativity_factor, float coherence_threshold)` Initializes the imagination system. Creates a new imagination system with the specified creativity factor and coherence threshold.
 - #### `SocialSystem* initializeSocialSystem(int max_interactions, int max_models)` Initializes a new social system with specified maximum interactions and models. Sets up the social system with initial values for interactions and models.
@@ -829,429 +915,10 @@ typedef struct {
 - #### `printSystemHealthReport()` Prints a comprehensive report of the system's health, including uptime, check statistics, and critical events.
 - #### `systemFallbackCheck(...)` Performs a comprehensive fallback check of the system, validating various components and handling any critical errors or inconsistencies.
 
-
-## Usage
-
-### Initialization
-
-To initialize the neural network and memory system, use the following functions:
-
-```c
-MemorySystem *memorySystem = createMemorySystem(MEMORY_BUFFER_SIZE);
-Neuron neurons[MAX_NEURONS];
-uint connections[MAX_NEURONS * MAX_CONNECTIONS] = {0};
-float weights[MAX_NEURONS * MAX_CONNECTIONS] = {0};
-float input_tensor[INPUT_SIZE] = {0};
-initializeNeurons(neurons, connections, weights, input_tensor);
-```
-
-## API Reference
-
-### Memory System Functions
-
-- `MemorySystem *createMemorySystem(unsigned int capacity)`: Creates a new memory system.
-- `void freeMemorySystem(MemorySystem *system)`: Frees the memory system.
-- `void addMemory(MemorySystem *system, Neuron *neurons, float *input_tensor, unsigned int timestamp)`: Adds a memory to the system.
-- `void saveMemorySystem(MemorySystem *system, const char *filename)`: Saves the memory system to a file.
-- `MemorySystem *loadMemorySystem(const char *filename)`: Loads the memory system from a file.
-- `void saveHierarchicalMemory(MemorySystem *system, const char *filename)`: Saves the hierarchical memory to a file.
-- `void loadHierarchicalMemory(MemorySystem *system, const char *filename)`: Loads the hierarchical memory from a file.
-
-### Neuron and Connection Management Functions
-
-- `void initializeNeurons(Neuron *neurons, uint *connections, float *weights, float *input_tensor)`: Initializes the neurons.
-- `void updateNeuronStates(Neuron *neurons, float *recurrent_weights)`: Updates the neuron states.
-- `void updateWeights(float *weights, Neuron *neurons, uint *connections, float learning_rate)`: Updates the weights.
-
-### Dynamic Parameters Functions
-
-- `DynamicParameters initDynamicParameters()`: Initializes the dynamic parameters.
-- `void updateDynamicParameters(DynamicParameters *params, float performance_delta, float stability_measure, float error_rate)`: Updates the dynamic parameters.
-
-### Performance Metrics Functions
-
-- `float calculatePerformanceScore(PerformanceMetrics metrics)`: Calculates the performance score.
-- `float computeAverageOutput(Neuron *neurons)`: Computes the average output.
-- `float computeErrorRate(Neuron *neurons, float *previous_outputs)`: Computes the error rate.
-
-### Optimization Functions
-
-- `void optimizeParameters(OptimizationState *opt_state, PerformanceMetrics *history, int history_size)`: Optimizes the parameters.
-
-### Adaptation Functions
-
-- `void adaptNetworkDynamic(Neuron *neurons, float *weights, DynamicParameters *params, float performance_delta, float *input_tensor)`: Adapts the network with dynamic parameters.
-
-### Search world wide web for more information
-
-
-# Algorithm and Mathematics
-
-This document outlines the core algorithms and mathematical principles behind a decentralized neural network architecture. These mechanisms enable hierarchical memory management, dynamic adaptation, and optimization.
-
----
-
-## Key Components
-
-### 1. **Neuron State Update**
-
-This algorithm calculates the new state of each neuron based on its current state, inputs, and neighboring influences.
-
-#### How It Works:
-
-- **State Update Formula**:
-  `new_state = (current_state * decay_factor) + (recurrent_inputs * recurrent_weight) + (neighbor_influences * neighbor_weight)`
-- **Activation Function**: The output is scaled using a hyperbolic tangent (tanh) function:
-  `output = tanh(state * scale)`
-
----
-
-### 2. **Weight Update**
-
-Adjusts the connections (weights) between neurons using a modified Hebbian learning rule.
-
-#### How It Works:
-
-- **Weight Update Formula**:
-  `delta_w = learning_rate * (pre_activation * post_activation - weight * decay_factor)`
-- **Normalization**: Weights are clipped to prevent unbounded growth:
-  `new_weight = max(-1.0, min(1.0, weight + delta_w))`
-
----
-
-### 3. **Memory Management**
-
-Maintains memories in a hierarchical system, adjusting their importance dynamically.
-
-#### How It Works:
-
-- **Memory Importance**:
-  `importance = sum(abs(vector[i]) for i in range(vector_size)) / vector_size`
-- **Decay Over Time**:
-  `new_importance = importance * decay_factor`
-- **Strengthening Important Memories**:
-  `new_importance = importance * strengthen_factor`
-
----
-
-### 4. **Dynamic Parameter Adaptation**
-
-Automatically tunes parameters based on performance and stability.
-
-#### How It Works:
-
-- **Adaptation Rate**:
-  `new_adaptation_rate = (momentum * adaptation_rate) + ((1 - momentum) * target_rate)`
-- **Plasticity Adjustment**:
-  `new_plasticity = plasticity * stability_factor`
-- **Noise Tolerance**:
-  `new_noise_tolerance = max(0.1, noise_tolerance * (1 - error_rate))`
-
----
-
-### 5. **Performance Optimization**
-
-Optimizes learning rate and batch size based on network performance.
-
-#### How It Works:
-
-- **Performance Score**:
-  `performance_score = (time_score * 0.4) + (output_score * 0.4) + (error_penalty * 0.2)`
-- **Batch Size Adjustment**:
-  `new_batch_size = (current_batch_size % max_batch_size) + 1`
-- **Learning Rate Update**:
-  `new_learning_rate = current_learning_rate * (rand() / RAND_MAX) * 0.5 + 0.75`
-
----
-
-### 6. **Pattern Matching**
-
-Finds similar memories using cosine similarity.
-
-#### How It Works:
-
-- **Cosine Similarity**:
-  `similarity = (sum(vector1[i] * vector2[i] for i in range(vector_size))) / (sqrt(sum(vector1[i]**2 for i in range(vector_size))) * sqrt(sum(vector2[i]**2 for i in range(vector_size))))`
-
----
-
-### 7. **Performance Analysis**
-
-Provides insights by calculating statistics like averages and variances.
-
-#### How It Works:
-
-- **Average**:
-  `average = sum(values) / len(values)`
-- **Variance**:
-  `variance = sum((x - average)**2 for x in values) / len(values)`
-
----
-
-### 8. **Backpropagation**
-
-Refines the network by minimizing errors via gradient descent.
-
-#### How It Works:
-
-- **Loss Function (Mean Squared Error)**:
-  `loss = sum((y[i] - y_hat[i])**2 for i in range(n)) / n`
-- **Gradient Descent**:
-  `new_weight = weight - (learning_rate * loss_gradient)`
-
----
-
-### 9. **SIMD Operations**
-
-Performs vector operations efficiently.
-
-#### How It Works:
-
-- **Addition**:
-  `result[i] = vector1[i] + vector2[i]`
-- **Multiplication**:
-  `result[i] = vector1[i] * vector2[i]`
-
----
-
-### 10. **Memory Vector Computation**
-
-Creates a memory vector by combining various data sources:
-`memory_vector = [neuron_states, neuron_outputs, input_tensor]`
-
----
-
-### 11. **Network Stability Measurement**
-
-Assesses stability by comparing current and previous neuron states.
-
-#### How It Works:
-
-- **Stability Measure**:
-  `stability_measure = 1 - (sum(abs(current_state[i] - previous_state[i]) for i in range(n)) / n)`
-
----
-
-### 12. **Memory Merging**
-
-Combines similar memories to reduce redundancy.
-
-#### How It Works:
-
-- **Weighted Merge**:
-  `merged_vector = ((importance1 * vector1) + (importance2 * vector2)) / (importance1 + importance2)`
-- **Merged Importance**:
-  `merged_importance = max(importance1, importance2) * 1.1`
-
----
-
-# Neural Web Training Mechanism
-
-This README file explains the training mechanism of the neural web implemented in the provided `main()` function. The training process involves several key components, including Metal device setup, memory system management, neural network initialization, and the main simulation loop for training. Below, we delve into the design reasons behind each component.
-
-## Table of Contents
-
-1. [Metal Device Setup](#metal-device-setup)
-2. [Memory System Management](#memory-system-management)
-3. [Neural Network Initialization](#neural-network-initialization)
-4. [Main Simulation Loop](#main-simulation-loop)
-5. [Performance Tracking and Optimization](#performance-tracking-and-optimization)
-6. [Dynamic Parameter Adaptation](#dynamic-parameter-adaptation)
-7. [Overview](#overview)
-
-## Metal Device Setup
-
-### Code
-
-```c
-id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-id<MTLCommandQueue> commandQueue = [device newCommandQueue];
-```
-
-### Design Reason
-
-Metal is used for its high performance and low-level access to the GPU, which is crucial for the efficient computation required in neural network training. Setting up the Metal device and command queue ensures that the GPU resources are ready for compute tasks.
-
-## Memory System Management
-
-### Code
-
-```c
-MemorySystem *memorySystem = loadMemorySystem("memory_system.dat");
-if (memorySystem != NULL) {
-    loadHierarchicalMemory(memorySystem, "hierarchical_memory.dat");
-    // Print memory system statistics and samples
-} else {
-    memorySystem = createMemorySystem(MEMORY_BUFFER_SIZE);
-}
-```
-
-### Design Reason
-
-The memory system is designed to store and manage hierarchical memory structures, which are essential for retaining learned patterns and experiences. This hierarchical approach allows the system to prioritize and manage memories based on their importance and recency, mimicking human memory processes. Loading an existing memory system ensures continuity and prevents the loss of previously learned information, along with the working memory system allowing the model to have a dynamic realtime memory.
-
-## Meta controller, cognitive system, goal planning
-
-```c
-MetaController *metaController = initializeMetaController(network_regions);
-IntrinsicMotivation *motivation = initializeMotivationSystem();
-GoalSystem *goalSystem = initializeGoalSystem(10);
-GlobalContextManager *contextManager = initializeGlobalContextManager(MAX_NEURONS);
-```
-
-### Design Reason
-
-The meta controller, cognitive system, and goal planning components are initialized using the provided functions. These components are responsible for orchestrating the overall behavior of the neural web. Allowing the model to have a dynamic realtime memory, understand in a way.
-
-## Neural Network Initialization
-
-### Code
-
-```c
-Neuron neurons[MAX_NEURONS];
-uint connections[MAX_NEURONS * MAX_CONNECTIONS] = {0};
-float weights[MAX_NEURONS * MAX_CONNECTIONS] = {0};
-float input_tensor[INPUT_SIZE] = {0};
-
-if (memorySystem->size > 0) {
-    // Initialize neurons from memory
-} else {
-    initializeNeurons(neurons, connections, weights, input_tensor);
-}
-```
-
-### Design Reason
-
-Initializing the neural network involves setting up neurons, connections, and weights. If the memory system contains existing data, neurons are initialized from the last memory state to leverage previously learned information. This approach ensures that the network can build upon past experiences, enhancing learning efficiency and effectiveness.
-
-## Main Simulation Loop
-
-The main simulation loop is the core of the training process. It iterates over a predefined number of steps, performing various operations to train the neural network. This loop ensures that the network is continuously learning and adapting based on new inputs and feedback. Key operations include input generation, memory maintenance, forward and backward passes, memory updates, state history updates, performance metrics updates, dynamic parameter adaptation, and pattern matching.
-
-## Performance Tracking and Optimization
-
-Performance tracking and optimization are crucial for ensuring that the neural network operates efficiently. By periodically optimizing parameters such as learning rate and batch size, the system can adapt to changing conditions and improve overall performance. This dynamic optimization helps in achieving better convergence and accuracy.
-
-## Dynamic Parameter Adaptation
-
-### Code
-
-```c
-updateDynamicParameters(&params, performance_delta, stability, performance_history[step].error_rate);
-adaptNetworkDynamic(updatedNeurons, weights, &params, performance_delta, input_tensor);
-```
-
-### Design Reason
-
-Dynamic parameter adaptation allows the neural network to adjust its parameters in real-time based on performance metrics and network stability. This adaptability ensures that the network can respond to varying inputs and conditions, improving its robustness and flexibility. Parameters such as adaptation rate, input noise scale, and plasticity are adjusted to optimize learning and performance.
-
-### Overview
-
-1. **Initialization and Setup**:
-
-   - **Metal Device and Command Queue**:
-     ```c
-     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-     id<MTLCommandQueue> commandQueue = [device newCommandQueue];
-     ```
-   - **Memory System**:
-     ```c
-     MemorySystem *memorySystem = loadMemorySystem("memory_system.dat");
-     if (memorySystem == NULL) {
-       memorySystem = createMemorySystem(MEMORY_BUFFER_SIZE);
-     }
-     ```
-
-2. **Loading and Creating Shaders**:
-
-   - **Shader Source and Library**:
-     ```c
-     NSString *shaderSource = @"neuron_update.metal";
-     NSString *sourceCode = [NSString stringWithContentsOfFile:shaderSource encoding:NSUTF8StringEncoding error:&error];
-     id<MTLLibrary> library = [device newLibraryWithSource:sourceCode options:nil error:&error];
-     ```
-   - **Pipeline States**:
-     ```c
-     id<MTLFunction> function = [library newFunctionWithName:@"update_neurons"];
-     id<MTLComputePipelineState> pipelineState = [device newComputePipelineStateWithFunction:function error:&error];
-     ```
-
-3. **Neural Network Initialization**:
-
-   - **Neurons and Connections**:
-     ```c
-     Neuron neurons[MAX_NEURONS];
-     uint connections[MAX_NEURONS * MAX_CONNECTIONS] = {0};
-     float weights[MAX_NEURONS * MAX_CONNECTIONS] = {0};
-     ```
-   - **Buffers**:
-     ```c
-     id<MTLBuffer> neuronBuffer = [device newBufferWithBytes:neurons length:sizeof(neurons) options:MTLResourceStorageModeShared];
-     id<MTLBuffer> connectionBuffer = [device newBufferWithBytes:connections length:sizeof(connections) options:MTLResourceStorageModeShared];
-     id<MTLBuffer> weightBuffer = [device newBufferWithBytes:weights length:sizeof(weights) options:MTLResourceStorageModeShared];
-     ```
-
-4. **Main Simulation Loop**:
-
-   - **Task Prompt and Memory Management**:
-     ```c
-     for (int step = 0; step < STEPS; step++) {
-       TaskPrompt current_prompt;
-       generateTaskPrompt(&current_prompt, step);
-       if (step % 10 == 0) {
-         decayMemorySystem(memorySystem);
-         mergeSimilarMemories(memorySystem);
-       }
-     }
-     ```
-   - **Forward and Backward Pass**:
-     ```c
-     id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
-     id<MTLComputeCommandEncoder> forwardEncoder = [commandBuffer computeCommandEncoder];
-     [forwardEncoder setComputePipelineState:pipelineState];
-     [forwardEncoder setBuffer:neuronBuffer offset:0 atIndex:0];
-     [forwardEncoder setBuffer:weightBuffer offset:0 atIndex:1];
-     [forwardEncoder setBuffer:connectionBuffer offset:0 atIndex:2];
-     [forwardEncoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
-     [forwardEncoder endEncoding];
-     ```
-
-5. **Performance Metrics and Optimization**:
-
-   - **Compute Loss and Update Weights**:
-     ```c
-     float loss = computeMSELoss(updatedNeurons, target_outputs, max_neurons);
-     updateWeights(weights, updatedNeurons, connections, learning_rate);
-     ```
-   - **Optimize Parameters**:
-     ```c
-     if (step % OPTIMIZATION_WINDOW == 0 && step > 0) {
-       optimizeParameters(&opt_state, performance_history, step + 1);
-     }
-     ```
-
-6. **Cleanup and Saving State**:
-   - **Save States**:
-     ```c
-     saveNetworkStates(stateHistory, STEPS);
-     saveMemorySystem(memorySystem, "memory_system.dat");
-     saveHierarchicalMemory(memorySystem, "hierarchical_memory.dat");
-     saveSystemParameters(system_params, "system_parameters.dat");
-     ```
-   - **Free Memory**:
-     ```c
-     freeMemorySystem(memorySystem);
-     free(stateHistory);
-     free(system_params);
-     ```
-
-### Example
-
-Example of the training can be seen in the MacOS\Arm/neural_web.m file in int main or if you are not familiar with metal.
-
-## Needed information
+## Notes 
 
 The metal version is more experimental in the sense of the structure of the int main function you should mostly use the C version contained in 64x/main folder by compiling it as a library and then running it through ctypes.
+
 You can call ./neural_web {dataset} to load a dataset.
 
 Note if you modify max_neurons in the example you have to also modify the input_size to be at max greater than the number of max_neurons by 1 or just lesser than the number of max_neurons or it will have an out of bounds error
