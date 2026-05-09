@@ -26,6 +26,7 @@ USER $USERNAME
 
 COPY --chown=$USERNAME:$USERNAME immitrin_functions.c ./
 COPY --chown=$USERNAME:$USERNAME neural_web.c ./
+COPY --chown=$USERNAME:$USERNAME include ./include
 
 RUN gcc -shared -fPIC \
     -o neural_web.so \
