@@ -84,4 +84,12 @@
 #define MAX_ATTACHMENT_BONDS 50
 #define EMOTION_HISTORY_SIZE 100
 #define MAX_EMOTION_PATTERNS 10
+
+typedef struct {
+  float state;
+  float output;
+  unsigned int num_connections;
+  unsigned int layer_id;
+} Neuron;
+
 #endif // DEFINITIONS_H
