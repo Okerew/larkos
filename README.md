@@ -78,7 +78,9 @@ Start by firstly generating embeddings with train_embeddings main file which you
 To compile the code, run the following command in the root directory of the project:
 #### C through Ctypes
 ```sh
-gcc -shared -fPIC -o neural_web.so neural_web.c -ljson-c
+gcc -shared -fPIC -o neural_web.so \
+neural_web.c immitrin_functions.c \
+-ljson-c
 ```
 
 To use (You can see more in the test_ctypes.py example)
@@ -93,18 +95,19 @@ lib = CDLL(lib_path)
 
 ```sh
 # Build executable
-clang -framework Metal -framework Foundation \
-  -I/opt/homebrew/Cellar/json-c/0.17/include \
-  -L/opt/homebrew/Cellar/json-c/0.17/lib \
-  -ljson-c \
-  -o neural_web neural_web.m
+clang MacOS.m neural_web.c simd_functions.c \
+-framework Metal -framework Foundation \
+-I/opt/homebrew/Cellar/json-c/0.18/include \
+-L/opt/homebrew/Cellar/json-c/0.18/lib -ljson-c \
+-O1 -o neural_web
 
 # Build dynamic library
-clang -dynamiclib -framework Metal -framework Foundation \
-  -I/opt/homebrew/Cellar/json-c/0.17/include \
-  -L/opt/homebrew/Cellar/json-c/0.17/lib \
-  -ljson-c \
-  -o libneural_web.dylib neural_web.m
+clang -dynamiclib \
+neural_web.c simd_functions.c \
+-I/opt/homebrew/Cellar/json-c/0.18/include \
+-L/opt/homebrew/Cellar/json-c/0.18/lib -ljson-c \
+-O1 \
+-o libneural_web.dylib
 
 ```
 
