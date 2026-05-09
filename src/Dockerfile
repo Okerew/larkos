@@ -28,7 +28,10 @@ USER $USERNAME
 
 COPY --chown=$USERNAME:$USERNAME neural_web.cpp ./
 
-RUN gcc -shared -fPIC -o neural_web.so neural_web.c -ljson-c
+RUN gcc -shared -fPIC \
+    -o neural_web.so \
+    neural_web.c expose_from_immitrin.c \
+    -ljson-c
 
 # Set the default command to run the program
 CMD ["./neural_web"]
