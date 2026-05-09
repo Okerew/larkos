@@ -1,7 +1,7 @@
 #ifndef NEURAL_KERNELS_CU
 #define NEURAL_KERNELS_CU
 
-#include "../../include/definitions.h"
+#include "../include/definitions.h"
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <math.h>
