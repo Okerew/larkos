@@ -30,13 +30,8 @@ WORKDIR /app
 # Switch to the non-root user
 USER $USERNAME
 
-COPY --chown=$USERNAME:$USERNAME cuda_kernels.cu  ./
+COPY --chown=$USERNAME:$USERNAME cuda  ./cuda
 
-COPY --chown=$USERNAME:$USERNAME neural_kernels.cpp  ./
-
-COPY --chown=$USERNAME:$USERNAME setup.py ./
+COPY --chown=$USERNAME:$USERNAME include ./include
 
 RUN python3 setup.py sdist bdist_wheel
-
-# Set the default command to run the program
-CMD ["./neural_web"]

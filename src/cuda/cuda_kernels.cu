@@ -7,13 +7,6 @@
 #include <math.h>
 
 typedef struct {
-  float state;
-  float output;
-  unsigned int num_connections;
-  unsigned int layer_id;
-} Neuron;
-
-typedef struct {
   float vector[MEMORY_VECTOR_SIZE];
   float importance;
   unsigned int timestamp;
