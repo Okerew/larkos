@@ -26,11 +26,12 @@ WORKDIR /app
 # Switch to the non-root user
 USER $USERNAME
 
-COPY --chown=$USERNAME:$USERNAME neural_web.cpp ./
+COPY --chown=$USERNAME:$USERNAME immitrin_functions.c ./
+COPY --chown=$USERNAME:$USERNAME neural_web.c ./
 
 RUN gcc -shared -fPIC \
     -o neural_web.so \
-    neural_web.c expose_from_immitrin.c \
+    neural_web.c immitrin_functions.c \
     -ljson-c
 
 # Set the default command to run the program
