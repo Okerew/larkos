@@ -6367,8 +6367,9 @@ bool detectConfabulation(Neuron *neurons, ReflectionHistory *history,
   // Detect confabulation with more nuanced criteria
   bool suspicious_pattern =
       (high_activation_count > MAX_NEURONS * 0.4f) || // Increased threshold
-      (activation_ratio > 0.9f ||
-       activation_ratio < 0.1f) || // Check for skewed distributions
+      ((high_activation_count + low_activation_count) > 0 &&
+       (activation_ratio > 0.9f ||
+        activation_ratio < 0.1f)) || // Check for skewed distributions
       (current_coherence <
        recent_historical_coherence * 0.7f) || // Less sensitive drop detection
       (current_coherence <
@@ -6404,8 +6405,12 @@ void regenerateResponse(Neuron *neurons, MemorySystem *memorySystem,
   }
 
   // Process neurons with gentler parameters to avoid instability
+  // Use 0.5f instead of 1.1f so the post-stabilisation processing
+  // doesn't immediately push tanh outputs back above the 0.95
+  // saturation threshold the old 1.1f caused an infinite loop
+  // of detect -> stabilise -> re-saturate -> detect
   processNeurons(neurons, MAX_NEURONS, weights, connections, MAX_CONNECTIONS,
-                 1.1f); // Lower gain
+                 0.5f);
 
   // Restore original parameters
   params->input_noise_scale = original_noise_scale;
@@ -10605,8 +10610,12 @@ void reshapeEmbeddingsWithEmotion(AffectiveSystem *sys, float *embeddings,
          sys->current_state.dominance * 0.3f) *
         sys->plasticity;
 
-    embeddings[i] = embeddings[i] * valence_scale * arousal_scale +
-                    affective_bias * emotional_weight;
+    // input_tensor has INPUT_SIZE elements; protect against embed_dim
+    // being larger (e.g. called with num_neurons instead of INPUT_SIZE)
+    if (i < INPUT_SIZE) {
+      embeddings[i] = embeddings[i] * valence_scale * arousal_scale +
+                      affective_bias * emotional_weight;
+    }
 
     float attractor_influence = 0.0f;
     if (sys->current_attractor_id != UINT32_MAX) {
@@ -10614,17 +10623,27 @@ void reshapeEmbeddingsWithEmotion(AffectiveSystem *sys, float *embeddings,
       attractor_influence =
           attr->context_weights[i] * attr->basin_strength * 0.2f;
     }
-    embeddings[i] += attractor_influence;
+    if (i < INPUT_SIZE) {
+      embeddings[i] += attractor_influence;
+    }
 
     if (complexity_factor > 0.5f) {
       float noise =
           ((float)rand() / RAND_MAX - 0.5f) * complexity_factor * 0.1f;
-      embeddings[i] += noise;
+      if (i < INPUT_SIZE) {
+        embeddings[i] += noise;
+      }
+    }
+
+    // Clamp to prevent unbounded growth from multiplicative
+    // valence_scale * arousal_scale compounding over many epochs
+    if (i < INPUT_SIZE) {
+      embeddings[i] = fmaxf(-10.0f, fminf(10.0f, embeddings[i]));
     }
 
     sys->affective_embeddings[i] =
         sys->affective_embeddings[i] * (1.0f - sys->plasticity) +
-        embeddings[i] * sys->plasticity * 0.01f;
+        (i < INPUT_SIZE ? embeddings[i] : 0.0f) * sys->plasticity * 0.01f;
   }
 }
 
@@ -11268,8 +11287,12 @@ void applyEmotionalProcessing(EmotionalSystem *system, Neuron *neurons,
   if (aff_sys != NULL) {
     aff_sys->current_state.valence =
         aff_sys->current_state.valence * 0.6f + net_valence * 0.4f;
+    aff_sys->current_state.valence =
+        fmaxf(-1.0f, fminf(1.0f, aff_sys->current_state.valence));
     aff_sys->current_state.arousal =
         aff_sys->current_state.arousal * 0.6f + arousal * 0.4f;
+    aff_sys->current_state.arousal =
+        fmaxf(0.0f, fminf(1.0f, aff_sys->current_state.arousal));
 
     float complexity_factor =
         emotional_conflict * 4.0f + total_emotional_energy * 0.3f;
@@ -11329,6 +11352,10 @@ void applyEmotionalProcessing(EmotionalSystem *system, Neuron *neurons,
     float emotional_noise = (((float)rand() / RAND_MAX) * 2.0f - 1.0f) *
                             total_emotional_energy * 0.08f;
     neurons[i].state += emotional_noise;
+
+    // Guard against NaN propagation from emotional state accumulation
+    if (isnan(neurons[i].state))
+      neurons[i].state = 0.0f;
   }
 
   if (total_emotional_energy > 0.5f || emotional_conflict > 0.3f) {
@@ -11769,13 +11796,17 @@ float applyImaginationToDecision(ImaginationSystem *imagination,
   influence = fmax(0.01f, fmin(0.5f, influence)); // Reasonable bounds
 
   for (int i = 0; i < MIN(max_neurons, MEMORY_VECTOR_SIZE); i++) {
-    // Blend imagined outcome into neuron states
-    neurons[i].state = neurons[i].state * (1.0f - influence) +
-                       scenario->outcomes[best_idx].vector[i] * influence;
+    float ov = scenario->outcomes[best_idx].vector[i];
+    if (isnan(ov))
+      ov = 0.0f;
 
-    // Also slightly influence the input tensor
-    input_tensor[i] = input_tensor[i] * 0.95f +
-                      scenario->outcomes[best_idx].vector[i] * 0.05f;
+    // Blend imagined outcome into neuron states
+    neurons[i].state = neurons[i].state * (1.0f - influence) + ov * influence;
+
+    // input_tensor has INPUT_SIZE elements; cap write to valid range
+    if (i < INPUT_SIZE) {
+      input_tensor[i] = input_tensor[i] * 0.95f + ov * 0.05f;
+    }
   }
 
   // Calculate how much influence was applied
@@ -11843,7 +11874,10 @@ void blendImaginedOutcomes(ImaginedOutcome *outcomes, int num_outcomes,
   // Calculate total probability for normalization
   float total_prob = 0.0f;
   for (int i = 0; i < num_outcomes; i++) {
-    total_prob += outcomes[i].probability;
+    float p = outcomes[i].probability;
+    if (isnan(p) || isinf(p))
+      p = 0.0f;
+    total_prob += p;
   }
 
   if (total_prob <= 0.0f)
@@ -11851,10 +11885,16 @@ void blendImaginedOutcomes(ImaginedOutcome *outcomes, int num_outcomes,
 
   // Weighted average of all outcomes
   for (int i = 0; i < num_outcomes; i++) {
-    float weight = outcomes[i].probability / total_prob;
+    float p = outcomes[i].probability;
+    if (isnan(p) || isinf(p))
+      p = 0.0f;
+    float weight = p / total_prob;
 
     for (int j = 0; j < MEMORY_VECTOR_SIZE; j++) {
-      result_vector[j] += outcomes[i].vector[j] * weight;
+      float v = outcomes[i].vector[j];
+      if (isnan(v) || isinf(v))
+        v = 0.0f;
+      result_vector[j] += v * weight;
     }
   }
 }
@@ -11899,8 +11939,12 @@ void adjustNeuronsWithImagination(Neuron *neurons, ImaginedOutcome *outcome,
     return;
 
   for (int i = 0; i < max_neurons && i < MEMORY_VECTOR_SIZE; i++) {
-    neurons[i].state =
-        neurons[i].state * (1.0f - influence) + outcome->vector[i] * influence;
+    float ov = outcome->vector[i];
+    if (isnan(ov))
+      ov = 0.0f;
+    neurons[i].state = neurons[i].state * (1.0f - influence) + ov * influence;
+    if (isnan(neurons[i].state))
+      neurons[i].state = 0.0f;
     neurons[i].output =
         tanh(neurons[i].state); // Recalculate output with new state
   }
@@ -13837,9 +13881,9 @@ bool checkMemoryUsage() {
   }
 
 #if defined(__APPLE__) || defined(__FreeBSD__)
-  long memory_mb = usage.ru_maxrss / (1024 * 1024); // bytes → MB
+  long memory_mb = usage.ru_maxrss / (1024 * 1024); // bytes -> MB
 #else
-  long memory_mb = usage.ru_maxrss / 1024; // KB → MB
+  long memory_mb = usage.ru_maxrss / 1024; // KB -> MB
 #endif
 
 #if defined(__APPLE__)
