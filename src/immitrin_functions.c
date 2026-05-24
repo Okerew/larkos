@@ -73,6 +73,10 @@ void updateNeuronStates(Neuron *neurons, int num_neurons,
     for (int j = 0; j < group_size; j++) {
       neurons[i + j].state = result_states[j];
       neurons[i + j].output = result_outputs[j];
+      if (isnan(neurons[i + j].state))
+        neurons[i + j].state = 0.0f;
+      if (isnan(neurons[i + j].output))
+        neurons[i + j].output = 0.0f;
     }
   }
 }
@@ -164,6 +168,10 @@ void processNeurons(Neuron *neurons, int num_neurons, float *weights,
     for (int k = 0; k < group_size; k++) {
       neurons[i + k].state = result_states[k];
       neurons[i + k].output = tanh(result_states[k] * scaled_factor);
+      if (isnan(neurons[i + k].state))
+        neurons[i + k].state = 0.0f;
+      if (isnan(neurons[i + k].output))
+        neurons[i + k].output = 0.0f;
     }
   }
 }
