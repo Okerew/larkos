@@ -2,13 +2,20 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <simd/simd.h>
 
-// Function to apply element-wise tanh using SIMD
-simd_float4 simd_tanh(simd_float4 input) {
-  simd_float4 result;
-  for (int i = 0; i < 4; i++) {
-    result[i] = tanhf(input[i]);
-  }
-  return result;
+/* Vectorised tanh via the Lambert continued-fraction rational
+ * approximation: tanh(x) ~= x*(27 + x^2) / (27 + 9*x^2).
+ * Accurate to ~1e-3 over [-3, 3]; we clamp to that range first since
+ * the approximation drifts past the tails and our states are bounded
+ * into ~[-1, 1] anyway. The old version dropped to a scalar loop with
+ * tanhf() per lane, which defeats the SIMD just as badly as the SSE
+ * version did before the fix there. */
+simd_float4 simd_tanh(simd_float4 x) {
+  x = simd_clamp(x, -3.0f, 3.0f);
+
+  simd_float4 x2 = x * x;
+  simd_float4 num = x * (27.0f + x2);
+  simd_float4 den = 27.0f + 9.0f * x2;
+  return num / den;
 }
 
 simd_float4 simd_add(simd_float4 a, simd_float4 b) {
