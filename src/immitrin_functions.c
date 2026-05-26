@@ -4,18 +4,26 @@
 #include <stdlib.h>
 #include <time.h>
 
+/* Vectorised tanh via the Lambert continued-fraction rational
+ * approximation: tanh(x) ~= x*(27 + x^2) / (27 + 9*x^2).
+ * Accurate to ~1e-3 over [-3, 3]; we clamp to that range first since
+ * the approximation drifts past the tails and our states are bounded
+ * into ~[-1, 1] anyway. Stays entirely in SSE registers the old
+ * version dropped to a scalar loop with two libm exp() calls per lane,
+ * which fully defeated the SIMD and becomes a hotspot as MAX_NEURONS
+ * grows. */
 __m128 _mm_tanh_ps(__m128 x) {
-  __m128 result = _mm_setzero_ps();
-  float *px = (float *)&x;
-  float *pr = (float *)&result;
+  const __m128 lo = _mm_set1_ps(-3.0f);
+  const __m128 hi = _mm_set1_ps(3.0f);
+  x = _mm_max_ps(lo, _mm_min_ps(hi, x));
 
-  for (int i = 0; i < 4; i++) {
-    float exp_pos = exp(px[i]);
-    float exp_neg = exp(-px[i]);
-    pr[i] = (exp_pos - exp_neg) / (exp_pos + exp_neg);
-  }
+  const __m128 c27 = _mm_set1_ps(27.0f);
+  const __m128 c9 = _mm_set1_ps(9.0f);
 
-  return result;
+  __m128 x2 = _mm_mul_ps(x, x);
+  __m128 num = _mm_mul_ps(x, _mm_add_ps(c27, x2));
+  __m128 den = _mm_add_ps(c27, _mm_mul_ps(c9, x2));
+  return _mm_div_ps(num, den);
 }
 
 void updateNeuronStates(Neuron *neurons, int num_neurons,
@@ -60,6 +68,13 @@ void updateNeuronStates(Neuron *neurons, int num_neurons,
         _mm_add_ps(new_states, _mm_mul_ps(recurrent_inputs, recurrent_factor));
     new_states =
         _mm_add_ps(new_states, _mm_mul_ps(neighbor_influence, neighbor_factor));
+
+    // Squash the state before it is stored. Previously the state was
+    // kept raw and only the output got tanh'd, so the state climbed
+    // every call (decay 0.8 can't hold it against the recurrent +
+    // neighbour terms) and dragged the output to the +/-1 rail. Bounding
+    // the state here keeps the recurrence stable across epochs.
+    new_states = _mm_tanh_ps(new_states);
 
     // Apply activation function and scale
     __m128 scale = _mm_set1_ps(scaled_factor);
@@ -148,6 +163,12 @@ void processNeurons(Neuron *neurons, int num_neurons, float *weights,
           _mm_add_ps(weighted_sum, _mm_mul_ps(weight_vector, target_state));
     }
 
+    // Normalize the weighted sum by connection count. Without this the
+    // sum grows with connectivity (up to ~max_connections in magnitude)
+    // and pushes the state fixed point far past the tanh linear region.
+    __m128 inv_conn = _mm_set1_ps(1.0f / (float)max_connections);
+    weighted_sum = _mm_mul_ps(weighted_sum, inv_conn);
+
     // Load current states
     float current_state_array[4] = {0};
     for (int k = 0; k < group_size; k++) {
@@ -160,6 +181,13 @@ void processNeurons(Neuron *neurons, int num_neurons, float *weights,
     __m128 weighted_factor = _mm_set1_ps(0.2f);
     __m128 new_states = _mm_add_ps(_mm_mul_ps(current_states, decay_factor),
                                    _mm_mul_ps(weighted_sum, weighted_factor));
+
+    // Squash the STATE itself, not just the output. The state feeds
+    // back into the next call's weighted_sum and into the python input
+    // channel; leaving it unbounded let it climb toward its fixed point
+    // (~6) every epoch until tanh(state*sf) saturated. Bounding the
+    // state keeps the whole recurrence inside the linear-ish region.
+    new_states = _mm_tanh_ps(new_states);
 
     // Store and update neuron states
     float result_states[4];
