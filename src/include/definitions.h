@@ -84,6 +84,7 @@
 #define MAX_ATTACHMENT_BONDS 50
 #define EMOTION_HISTORY_SIZE 100
 #define MAX_EMOTION_PATTERNS 10
+#define NEURON_STRIDE 4
 
 typedef struct {
   float state;
