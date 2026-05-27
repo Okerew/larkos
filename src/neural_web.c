@@ -1015,13 +1015,10 @@ DynamicParameters initDynamicParameters() {
 MemorySystem *createMemorySystem(unsigned int capacity) {
   MemorySystem *system = (MemorySystem *)malloc(sizeof(MemorySystem));
 
-  // Initialize hierarchical structure
-  system->hierarchy.short_term.capacity = capacity * 0.5; // 50% for short term
-  system->hierarchy.medium_term.capacity =
-      capacity * 0.3;                                    // 30% for medium term
-  system->hierarchy.long_term.capacity = capacity * 0.2; // 20% for long term
+  system->hierarchy.short_term.capacity = capacity * 0.5;  // 50% short term
+  system->hierarchy.medium_term.capacity = capacity * 0.3; // 30% medium
+  system->hierarchy.long_term.capacity = capacity * 0.2;   // 20% long term
 
-  // Allocate memory for each level
   system->hierarchy.short_term.entries = (MemoryEntry *)malloc(
       system->hierarchy.short_term.capacity * sizeof(MemoryEntry));
   system->hierarchy.medium_term.entries = (MemoryEntry *)malloc(
@@ -1029,23 +1026,20 @@ MemorySystem *createMemorySystem(unsigned int capacity) {
   system->hierarchy.long_term.entries = (MemoryEntry *)malloc(
       system->hierarchy.long_term.capacity * sizeof(MemoryEntry));
 
-  // Initialize thresholds
   system->hierarchy.short_term.importance_threshold = 0.3f;
   system->hierarchy.medium_term.importance_threshold = 0.5f;
   system->hierarchy.long_term.importance_threshold = 0.7f;
   system->hierarchy.consolidation_threshold = 0.6f;
   system->hierarchy.abstraction_threshold = 0.8f;
 
-  // Initialize sizes
   system->hierarchy.short_term.size = 0;
   system->hierarchy.medium_term.size = 0;
   system->hierarchy.long_term.size = 0;
 
-  // Initialize original structure for compatibility
-  system->entries = system->hierarchy.short_term.entries;
+  system->entries = (MemoryEntry *)malloc(capacity * sizeof(MemoryEntry));
   system->head = 0;
   system->size = 0;
-  system->capacity = system->hierarchy.short_term.capacity;
+  system->capacity = capacity;
 
   return system;
 }
@@ -1848,6 +1842,83 @@ void saveNetworkStates(NetworkStateSnapshot *history, int total_steps) {
   // Clean up
   fclose(fp);
   json_object_put(root); // Free the memory used by the JSON object
+}
+
+int loadNetworkStates(float *neurons, float *input_tensor) {
+  FILE *fp = fopen("network_states.json", "r");
+  if (fp == NULL) {
+    printf("Error opening network_states.json for reading\n");
+    return -1;
+  }
+
+  fseek(fp, 0, SEEK_END);
+  long len = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+
+  char *buf = malloc(len + 1);
+  if (buf == NULL) {
+    fclose(fp);
+    return -1;
+  }
+  fread(buf, 1, len, fp);
+  buf[len] = '\0';
+  fclose(fp);
+
+  struct json_object *root = json_tokener_parse(buf);
+  free(buf);
+  if (root == NULL) {
+    printf("Error parsing network_states.json\n");
+    return -1;
+  }
+
+  struct json_object *total_steps_obj;
+  struct json_object *history_array;
+  if (!json_object_object_get_ex(root, "total_steps", &total_steps_obj) ||
+      !json_object_object_get_ex(root, "history", &history_array)) {
+    printf("network_states.json missing expected keys\n");
+    json_object_put(root);
+    return -1;
+  }
+
+  int total_steps = json_object_get_int(total_steps_obj);
+  if (total_steps <= 0) {
+    json_object_put(root);
+    return -1;
+  }
+
+  /* Last snapshot only it is the state training ended in. */
+  struct json_object *last_step =
+      json_object_array_get_idx(history_array, total_steps - 1);
+  if (last_step == NULL) {
+    json_object_put(root);
+    return -1;
+  }
+
+  struct json_object *states_array;
+  struct json_object *outputs_array;
+  struct json_object *inputs_array;
+  json_object_object_get_ex(last_step, "states", &states_array);
+  json_object_object_get_ex(last_step, "outputs", &outputs_array);
+  json_object_object_get_ex(last_step, "inputs", &inputs_array);
+
+  if (states_array != NULL && outputs_array != NULL) {
+    for (int j = 0; j < MAX_NEURONS; j++) {
+      neurons[j * NEURON_STRIDE] = (float)json_object_get_double(
+          json_object_array_get_idx(states_array, j));
+      neurons[j * NEURON_STRIDE + 1] = (float)json_object_get_double(
+          json_object_array_get_idx(outputs_array, j));
+    }
+  }
+
+  if (inputs_array != NULL) {
+    for (int j = 0; j < INPUT_SIZE; j++) {
+      input_tensor[j] = (float)json_object_get_double(
+          json_object_array_get_idx(inputs_array, j));
+    }
+  }
+
+  json_object_put(root);
+  return 0;
 }
 
 void initializeNeurons(Neuron *neurons, uint *connections, float *weights,
