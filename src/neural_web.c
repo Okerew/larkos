@@ -2743,7 +2743,8 @@ SparseEmbedding *getContextualEmbedding(const char *word, const char **context,
     contextual->norm = 1.0f;
   }
 
-  strcpy(context_cache[cache_idx].context_hash, context_hash);
+  strncpy(context_cache[cache_idx].context_hash, context_hash, sizeof(context_cache[cache_idx].context_hash) - 1);
+  context_cache[cache_idx].context_hash[sizeof(context_cache[cache_idx].context_hash) - 1] = '\0';
   context_cache[cache_idx].recency = 1.0f;
 
   return contextual;
