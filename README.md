@@ -41,6 +41,8 @@ If on windows use wsl i have removed the windows version as I don't think it was
 
 ## Larkos 0.1
 
+<img src="https://github.com/Okerew/larkos_0.1/blob/main/larkos0.1.png?raw=true">
+
 Introducing Larkos 0.1 a self-learning model with a state-based fusion mechanism, transformers that guide the model, based on the larkos architecture.
 
 <a href="https://github.com/Okerew/larkos_0.1">Visit github page</a>
@@ -943,4 +945,3 @@ You can use vocabulary the converter assuming this json structure {"WORD": {"MEA
 Remember to use the security feature
 
 Only unix systems.
-
