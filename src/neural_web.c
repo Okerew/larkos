@@ -1662,6 +1662,34 @@ void consolidateToLongTermMemory(WorkingMemorySystem *working_memory,
       memorySystem->hierarchy.long_term.size++;
     }
   }
+
+  // Drain processed entries from focus and active memory so they
+  // don't accumulate indefinitely, starving new entries
+  for (unsigned int i = 0; i < working_memory->focus.size; i++) {
+    WorkingMemoryEntry *entry = &working_memory->focus.entries[i];
+    if (entry->features) {
+      free(entry->features);
+      entry->features = NULL;
+    }
+    if (entry->context_vector) {
+      free(entry->context_vector);
+      entry->context_vector = NULL;
+    }
+  }
+  working_memory->focus.size = 0;
+
+  for (unsigned int i = 0; i < working_memory->active.size; i++) {
+    WorkingMemoryEntry *entry = &working_memory->active.entries[i];
+    if (entry->features) {
+      free(entry->features);
+      entry->features = NULL;
+    }
+    if (entry->context_vector) {
+      free(entry->context_vector);
+      entry->context_vector = NULL;
+    }
+  }
+  working_memory->active.size = 0;
 }
 
 void saveMemorySystem(MemorySystem *system, const char *filename) {
@@ -6203,16 +6231,19 @@ float computeNovelty(Neuron *updatedNeurons, NetworkStateSnapshot stateHistory,
                      int step) {
   float novelty_score = 0.0f;
 
-  // Compare current neurons to historical state to compute novelty
-  for (int i = 0; i < step; i++) {
+  // Clamp to MAX_NEURONS: both updatedNeurons and stateHistory.states are
+  // bounded by MAX_NEURONS. Using step directly causes an out-of-bounds read
+  // once step exceeds MAX_NEURONS.
+  int compare_count = (step < MAX_NEURONS) ? step : MAX_NEURONS;
+
+  for (int i = 0; i < compare_count; i++) {
     float state_difference =
         fabs(updatedNeurons[i].state - stateHistory.states[i]);
     novelty_score += state_difference;
   }
 
-  // Normalize novelty score based on the number of neurons
-  if (step > 0) {
-    novelty_score /= step;
+  if (compare_count > 0) {
+    novelty_score /= compare_count;
   }
 
   // Ensure novelty score is between 0 and 1
