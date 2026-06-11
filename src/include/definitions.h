@@ -85,6 +85,9 @@
 #define EMOTION_HISTORY_SIZE 100
 #define MAX_EMOTION_PATTERNS 10
 #define NEURON_STRIDE 4
+#define ACTIVATION_HISTORY_SIZE 50
+#define HISTORY_SIZE 100
+#define REASONING_SIZE 1024
 
 typedef struct {
   float state;

@@ -42,10 +42,11 @@ typedef struct {
   unsigned int neuron_id;
   NeuronSpecializationType type;
   float specialization_score;
-  float activation_history[50]; // Recent activation history
-  unsigned int history_index;   // Current index in circular buffer
-  float avg_activation;         // Average activation level
-  float importance_factor;      // How important this specialized neuron is
+  float
+      activation_history[ACTIVATION_HISTORY_SIZE]; // Recent activation history
+  unsigned int history_index; // Current index in circular buffer
+  float avg_activation;       // Average activation level
+  float importance_factor;    // How important this specialized neuron is
 } SpecializedNeuron;
 
 typedef struct {
@@ -319,14 +320,14 @@ typedef struct {
   float coherence_score;
   float novelty_score;
   float consistency_score;
-  char reasoning[1024];
+  char reasoning[REASONING_SIZE];
   bool potentially_confabulated;
 } ReflectionMetrics;
 
 typedef struct {
-  float historical_confidence[100];
-  float historical_coherence[100];
-  float historical_consistency[100];
+  float historical_confidence[HISTORY_SIZE];
+  float historical_coherence[HISTORY_SIZE];
+  float historical_consistency[HISTORY_SIZE];
   int history_index;
   float confidence_threshold;
   float coherence_threshold;
@@ -6368,7 +6369,7 @@ ReflectionHistory *initializeReflectionSystem() {
   history->history_index = 0;
 
   // Initialize historical metrics with neutral values to prevent initial bias
-  for (int i = 0; i < 100; i++) {
+  for (int i = 0; i < HISTORY_SIZE; i++) {
     history->historical_coherence[i] = 0.75f;
     history->historical_confidence[i] = 0.75f;
     history->historical_consistency[i] = 0.75f;
@@ -6454,9 +6455,9 @@ bool detectConfabulation(Neuron *neurons, ReflectionHistory *history,
   // Compare with historical coherence using a sliding window
   float recent_historical_coherence = 0.0f;
   int valid_history = 0;
-  for (int i = 0; i < MIN(20, 100);
+  for (int i = 0; i < MIN(20, HISTORY_SIZE);
        i++) { // Look at more recent history (last 20)
-    int idx = (history->history_index - i + 100) % 100;
+    int idx = (history->history_index - i + HISTORY_SIZE) % HISTORY_SIZE;
     if (history->historical_coherence[idx] > 0) {
       recent_historical_coherence += history->historical_coherence[idx];
       valid_history++;
@@ -6586,24 +6587,26 @@ ReflectionMetrics performSelfReflection(Neuron *neurons,
   int idx = reflection_history->history_index;
   reflection_history->historical_coherence[idx] =
       0.8f * metrics.coherence_score +
-      0.2f *
-          (idx > 0
-               ? reflection_history->historical_coherence[(idx - 1 + 100) % 100]
-               : metrics.coherence_score);
+      0.2f * (idx > 0 ? reflection_history
+                            ->historical_coherence[(idx - 1 + HISTORY_SIZE) %
+                                                   HISTORY_SIZE]
+                      : metrics.coherence_score);
 
   reflection_history->historical_confidence[idx] =
       0.8f * metrics.confidence_score +
       0.2f * (idx > 0 ? reflection_history
-                            ->historical_confidence[(idx - 1 + 100) % 100]
+                            ->historical_confidence[(idx - 1 + HISTORY_SIZE) %
+                                                    HISTORY_SIZE]
                       : metrics.confidence_score);
 
   reflection_history->historical_consistency[idx] =
       0.8f * metrics.consistency_score +
       0.2f * (idx > 0 ? reflection_history
-                            ->historical_consistency[(idx - 1 + 100) % 100]
+                            ->historical_consistency[(idx - 1 + HISTORY_SIZE) %
+                                                     HISTORY_SIZE]
                       : metrics.consistency_score);
 
-  reflection_history->history_index = (idx + 1) % 100;
+  reflection_history->history_index = (idx + 1) % HISTORY_SIZE;
 
   return metrics;
 }
@@ -12546,14 +12549,15 @@ void detectSpecializations(NeuronSpecializationSystem *system, Neuron *neurons,
             .activation_history[system->neurons[j].history_index] =
             neurons[i].output;
         system->neurons[j].history_index =
-            (system->neurons[j].history_index + 1) % 50;
+            (system->neurons[j].history_index + 1) % ACTIVATION_HISTORY_SIZE;
 
         // Update average activation
         float sum = 0.0f;
-        for (int k = 0; k < 50; k++) {
+        for (int k = 0; k < ACTIVATION_HISTORY_SIZE; k++) {
           sum += system->neurons[j].activation_history[k];
         }
-        system->neurons[j].avg_activation = sum / 50.0f;
+        system->neurons[j].avg_activation =
+            sum / (float)ACTIVATION_HISTORY_SIZE;
 
         break;
       }
@@ -12714,7 +12718,7 @@ void detectSpecializations(NeuronSpecializationSystem *system, Neuron *neurons,
         system->neurons[system->count].history_index = 0;
 
         // Initialize activation history
-        for (int k = 0; k < 50; k++) {
+        for (int k = 0; k < ACTIVATION_HISTORY_SIZE; k++) {
           system->neurons[system->count].activation_history[k] = 0.0f;
         }
         system->neurons[system->count].activation_history[0] =
@@ -12834,13 +12838,13 @@ void updateSpecializationImportance(NeuronSpecializationSystem *system,
         system->neurons[i].history_index; // oldest entry is at history_index
     float prev = system->neurons[i].activation_history[start_idx];
 
-    for (int j = 1; j < 50; j++) {
-      int idx = (start_idx + j) % 50;
+    for (int j = 1; j < ACTIVATION_HISTORY_SIZE; j++) {
+      int idx = (start_idx + j) % ACTIVATION_HISTORY_SIZE;
       float curr = system->neurons[i].activation_history[idx];
       activation_variance += fabs(curr - prev);
       prev = curr;
     }
-    activation_variance /= 49.0f;
+    activation_variance /= (float)(ACTIVATION_HISTORY_SIZE - 1);
 
     // Neurons with appropriate activity level for their specialization get
     // increased importance
