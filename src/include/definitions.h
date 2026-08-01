@@ -53,7 +53,7 @@
 #define MAX_SCENARIOS 10
 #define MAX_SCENARIO_STEPS 20
 #define MAX_SCENARIO_NAME_LENGTH 100
-#define MAX_SPECIALIZATIONS 8
+#define MAX_SPECIALIZATIONS 9
 #define MAX_SPECIALIZED_NEURONS 64
 #define MAX_OUTCOMES_PER_SCENARIO 10
 #define SPARSE_DENSITY                                                         \
@@ -61,9 +61,6 @@
 #define NUM_SEMANTIC_LAYERS 4 // Hierarchical representation layers
 #define CONTEXT_WINDOW 8      // Context for dynamic embeddings
 #define HASH_BUCKETS 1024     // For efficient similarity SearchResults
-#define HARM_WEIGHT 0.5f
-#define UNCERTAINTY_WEIGHT 0.3f
-#define BENEFIT_WEIGHT 0.2f
 #define MAX_TEXT_LENGTH 4096
 #define MAX_TOKENS 512
 #define MAX_TOKEN_LENGTH 64
@@ -88,6 +85,9 @@
 #define ACTIVATION_HISTORY_SIZE 50
 #define HISTORY_SIZE 100
 #define REASONING_SIZE 1024
+#define BEHAVIOR_WINDOW 16
+#define MAX_GUARDRAIL_FINDINGS 32
+#define MAX_RECOVERY_DEPTH 8
 
 typedef struct {
   float state;
@@ -95,5 +95,7 @@ typedef struct {
   unsigned int num_connections;
   unsigned int layer_id;
 } Neuron;
+
+typedef unsigned int uint;
 
 #endif // DEFINITIONS_H
