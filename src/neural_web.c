@@ -321,6 +321,16 @@ typedef struct {
   float confidence_threshold;
   float coherence_threshold;
   float consistency_threshold;
+  /* Running baseline of the raw similarity score. The network churns
+   * by design every epoch, so raw similarity sits at a permanently
+   * low plateau and consistency can only be measured as deviation
+   * from the system's own baseline, never against a fixed value. */
+  float consistency_baseline;
+  /* Same idea for output saturation: the network saturates hard by
+   * design and gets gentlefied back every epoch, so any absolute
+   * saturation threshold pins the confabulation flag on. Only a jump
+   * above the system's own saturation norm counts as anomalous. */
+  float saturation_baseline;
 } ReflectionHistory;
 
 typedef struct {
@@ -1406,6 +1416,37 @@ void updateContext(WorkingMemorySystem *system) {
   normalizeVector(system->global_context, CONTEXT_VECTOR_SIZE);
 }
 
+static void promotionThresholds(MemorySystem *system, float *mt_threshold,
+                                float *lt_threshold) {
+  int n = (int)system->size;
+  if (n < 20) {
+    *mt_threshold = system->hierarchy.medium_term.importance_threshold;
+    *lt_threshold = system->hierarchy.long_term.importance_threshold;
+    return;
+  }
+  float *sorted = (float *)malloc(n * sizeof(float));
+  if (sorted == NULL) {
+    *mt_threshold = system->hierarchy.medium_term.importance_threshold;
+    *lt_threshold = system->hierarchy.long_term.importance_threshold;
+    return;
+  }
+  for (int i = 0; i < n; i++) {
+    sorted[i] = system->entries[i].importance;
+  }
+  for (int i = 0; i < n - 1; i++) {
+    for (int j = i + 1; j < n; j++) {
+      if (sorted[i] > sorted[j]) {
+        float tmp = sorted[i];
+        sorted[i] = sorted[j];
+        sorted[j] = tmp;
+      }
+    }
+  }
+  *mt_threshold = sorted[(int)(n * 0.75f)];
+  *lt_threshold = sorted[(int)(n * 0.95f)];
+  free(sorted);
+}
+
 void addMemory(
     MemorySystem *system, WorkingMemorySystem *working_memory, Neuron *neurons,
     float *input_tensor, unsigned int timestamp,
@@ -1452,7 +1493,10 @@ void addMemory(
   updateContext(working_memory);
 
   // Then handle original hierarchical storage - NOW WITH BATCH REPLACEMENT
-  if (entry.importance >= system->hierarchy.long_term.importance_threshold) {
+  float mt_threshold, lt_threshold;
+  promotionThresholds(system, &mt_threshold, &lt_threshold);
+
+  if (entry.importance >= lt_threshold) {
     if (system->hierarchy.long_term.size <
         system->hierarchy.long_term.capacity) {
       system->hierarchy.long_term.entries[system->hierarchy.long_term.size++] =
@@ -1471,8 +1515,7 @@ void addMemory(
         free(least_important);
       }
     }
-  } else if (entry.importance >=
-             system->hierarchy.medium_term.importance_threshold) {
+  } else if (entry.importance >= mt_threshold) {
     if (system->hierarchy.medium_term.size <
         system->hierarchy.medium_term.capacity) {
       system->hierarchy.medium_term
@@ -1551,6 +1594,9 @@ void consolidateToLongTermMemory(WorkingMemorySystem *working_memory,
     return;
   }
 
+  float mt_threshold, lt_threshold;
+  promotionThresholds(memorySystem, &mt_threshold, &lt_threshold);
+
   // Process items in working memory focus
   for (unsigned int i = 0; i < working_memory->focus.size; i++) {
     WorkingMemoryEntry *enhanced_entry = &working_memory->focus.entries[i];
@@ -1617,10 +1663,9 @@ void consolidateToLongTermMemory(WorkingMemorySystem *working_memory,
       }
     }
 
-    // Store if valid and meets importance threshold
-    if (valid_entry &&
-        new_entry.importance >
-            memorySystem->hierarchy.long_term.importance_threshold &&
+    // Store if valid and meets the adaptive long-term threshold (the
+    // fixed 0.7 was unreachable, same root cause as addMemory routing)
+    if (valid_entry && new_entry.importance > lt_threshold &&
         memorySystem->hierarchy.long_term.size <
             memorySystem->hierarchy.long_term.capacity) {
 
@@ -5312,6 +5357,11 @@ float computeStateSimilarity(Neuron *current_neurons,
     float state_diff =
         fabs(current_neurons[i].state - historical_state->states[i]);
 
+    // states are unbounded, so a raw state_diff can dwarf the bounded
+    // output diff and drag similarity far below 0 no matter what the
+    // network does; squash it into [0, 1) so both parts stay comparable
+    state_diff = state_diff / (1.0f + state_diff);
+
     // Combine output and state differences
     float neuron_similarity = 1.0f - (output_diff + state_diff) / 2.0f;
     similarity += neuron_similarity;
@@ -5476,9 +5526,10 @@ float analyzeResponseCoherence(Neuron *neurons, MemorySystem *memorySystem,
 // Detect potential confabulation by analyzing response patterns
 bool detectConfabulation(Neuron *neurons, ReflectionHistory *history,
                          float current_coherence) {
-  // Check for activation anomalies with better thresholds
+  // Only the saturated tail is tallied: the quiet tail and the skew
+  // ratio it used to drive pinned the flag on a network that is
+  // bimodal by design, same as the fixed coherence threshold did.
   int high_activation_count = 0;
-  int low_activation_count = 0;
 
   for (int i = 0; i < MAX_NEURONS; i++) {
     // outputs are tanh-based in [-1, 1]: judge by magnitude, not sign, so a
@@ -5486,16 +5537,6 @@ bool detectConfabulation(Neuron *neurons, ReflectionHistory *history,
     if (fabsf(neurons[i].output) > 0.95f) {
       high_activation_count++;
     }
-    if (fabsf(neurons[i].output) < 0.05f) {
-      low_activation_count++;
-    }
-  }
-
-  // Calculate activation ratio to detect uniform distributions
-  float activation_ratio = 0.0f;
-  if ((high_activation_count + low_activation_count) > 0) {
-    activation_ratio = (float)high_activation_count /
-                       (high_activation_count + low_activation_count);
   }
 
   // Compare with historical coherence using a sliding window
@@ -5518,16 +5559,24 @@ bool detectConfabulation(Neuron *neurons, ReflectionHistory *history,
     recent_historical_coherence = 0.7f; // Default if no history
   }
 
-  // Detect confabulation with more nuanced criteria
+  // Detect confabulation with more nuanced criteria. Every absolute
+  // clause this function used to have (fixed coherence threshold,
+  // fixed saturation fraction, fixed skew bands) pinned the flag on
+  // permanently, because this network saturates and churns by design;
+  // what is left fires only on deviations from the system's own norms.
+  float saturation_fraction = (float)high_activation_count / (float)MAX_NEURONS;
+  if (history->saturation_baseline <= 0.0f) {
+    history->saturation_baseline = saturation_fraction;
+  }
+  bool saturation_spike =
+      saturation_fraction > history->saturation_baseline * 1.5f + 0.05f;
+  history->saturation_baseline =
+      0.95f * history->saturation_baseline + 0.05f * saturation_fraction;
+
   bool suspicious_pattern =
-      (high_activation_count > MAX_NEURONS * 0.4f) || // Increased threshold
-      ((high_activation_count + low_activation_count) > 0 &&
-       (activation_ratio > 0.9f ||
-        activation_ratio < 0.1f)) || // Check for skewed distributions
+      saturation_spike || // saturation jumped above the running norm
       (current_coherence <
-       recent_historical_coherence * 0.7f) || // Less sensitive drop detection
-      (current_coherence <
-       history->coherence_threshold * 0.9f); // More forgiving threshold
+       recent_historical_coherence * 0.7f); // Less sensitive drop detection
 
   return suspicious_pattern;
 }
@@ -5607,11 +5656,23 @@ ReflectionMetrics performSelfReflection(Neuron *neurons,
   metrics.novelty_score =
       MAX(0.1f, MIN(novelty, 0.9f)); // Prevent extreme novelty values
 
-  // Check consistency with previous responses
+  // Check consistency with previous responses. The network is designed
+  // to churn every epoch, so the raw similarity sits at a permanently
+  // low plateau and the old fixed floor could never read anything but
+  // ~0.3. Measure consistency as deviation from the system's own
+  // running baseline instead: steady churn counts as consistent, a
+  // regime shift does not. The baseline follows slowly so a persistent
+  // new regime eventually re-normalises.
   metrics.consistency_score = 1.0f;
   if (current_step > 0) {
-    metrics.consistency_score =
-        MAX(0.3f, computeConsistencyScore(neurons, history, current_step));
+    float raw = computeConsistencyScore(neurons, history, current_step);
+    if (reflection_history->consistency_baseline <= 0.0f) {
+      reflection_history->consistency_baseline = raw;
+    }
+    float deviation = fabsf(raw - reflection_history->consistency_baseline);
+    metrics.consistency_score = expf(-10.0f * deviation);
+    reflection_history->consistency_baseline =
+        0.98f * reflection_history->consistency_baseline + 0.02f * raw;
   }
 
   // Detect potential confabulation with improved detection
