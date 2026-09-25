@@ -39,11 +39,11 @@ docker(optional)
 
 If on windows use wsl i have removed the windows version as I don't think it was ever correctly working either way.
 
-## Larkos 0.3
+## Larkos 1.0
 
 <img src="https://github.com/Okerew/larkos_models/blob/main/larkos0.1.png?raw=true">
 
-Introducing Larkos 0.3 a self-learning model with a state-based fusion mechanism, transformers that guide the model, based on the larkos architecture.
+Introducing Larkos 1.0 a self-learning model with a state-based fusion mechanism, transformers that guide the model, based on the larkos architecture and an interactable memory journal any llm can use.
 
 <a href="https://github.com/Okerew/larkos_models">Visit github page</a>
 
