@@ -809,7 +809,8 @@ void selectOptimalMetaDecisionPath(Neuron *neurons, float *weights,
                                    MetacognitionMetrics *metacog);
 GlobalContextManager *initializeGlobalContextManager(uint32_t vector_size);
 void updateGlobalContext(GlobalContextManager *manager, Neuron *neurons,
-                         uint32_t num_neurons, float *input_tensor);
+                         uint32_t num_neurons, float *input_tensor,
+                         uint32_t input_size);
 void integrateGlobalContext(GlobalContextManager *manager, Neuron *neurons,
                             uint32_t num_neurons, float *weights,
                             uint32_t max_connections);

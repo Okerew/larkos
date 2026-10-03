@@ -1034,6 +1034,7 @@ void freeMemorySystem(MemorySystem *system) {
   free(system->hierarchy.short_term.entries);
   free(system->hierarchy.medium_term.entries);
   free(system->hierarchy.long_term.entries);
+  free(system->entries);
 
   free(system);
 }
@@ -1089,30 +1090,72 @@ int *findLeastImportantMemory(MemoryEntry *entries, unsigned int size,
     float importance;
   } IndexPair;
 
-  IndexPair *pairs = malloc(size * sizeof(IndexPair));
-  for (unsigned int i = 0; i < size; i++) {
-    pairs[i].index = i;
-    pairs[i].importance = entries[i].importance;
+  /* One O(n) pass keeping the `count` smallest entries in a max-heap
+   * (root = worst kept candidate) instead of the old O(n^2) selection
+   * sort that froze addMemory once a tier filled up. Tie order between
+   * equal-importance entries can differ from the sort - the evicted
+   * entries are interchangeable so that is fine.
+   */
+  IndexPair *heap = malloc(count * sizeof(IndexPair));
+  if (heap == NULL) {
+    *result_count = 0;
+    return NULL;
   }
-
-  // Sort by importance (ascending - least important first)
-  for (unsigned int i = 0; i < size - 1; i++) {
-    for (unsigned int j = i + 1; j < size; j++) {
-      if (pairs[i].importance > pairs[j].importance) {
-        IndexPair temp = pairs[i];
-        pairs[i] = pairs[j];
-        pairs[j] = temp;
+  unsigned int hn = 0;
+  for (unsigned int i = 0; i < size; i++) {
+    IndexPair p = {(int)i, entries[i].importance};
+    if (hn < count) {
+      heap[hn++] = p;
+      for (unsigned int c = hn - 1; c > 0;) {
+        unsigned int par = (c - 1) / 2;
+        if (heap[par].importance >= heap[c].importance)
+          break;
+        IndexPair t = heap[par];
+        heap[par] = heap[c];
+        heap[c] = t;
+        c = par;
+      }
+    } else if (p.importance < heap[0].importance) {
+      heap[0] = p;
+      for (unsigned int c = 0;;) {
+        unsigned int l = 2 * c + 1, r = 2 * c + 2, m = c;
+        if (l < hn && heap[l].importance > heap[m].importance)
+          m = l;
+        if (r < hn && heap[r].importance > heap[m].importance)
+          m = r;
+        if (m == c)
+          break;
+        IndexPair t = heap[m];
+        heap[m] = heap[c];
+        heap[c] = t;
+        c = m;
       }
     }
   }
 
-  // Extract the least important indices
-  int *result = malloc(count * sizeof(int));
-  for (unsigned int i = 0; i < count; i++) {
-    result[i] = pairs[i].index;
+  // Sort the kept winners ascending (least important first)
+  for (unsigned int i = 1; i < hn; i++) {
+    IndexPair key = heap[i];
+    int j = (int)i - 1;
+    while (j >= 0 && heap[j].importance > key.importance) {
+      heap[j + 1] = heap[j];
+      j--;
+    }
+    heap[j + 1] = key;
   }
 
-  free(pairs);
+  // Extract the least important indices
+  int *result = malloc(count * sizeof(int));
+  if (result == NULL) {
+    free(heap);
+    *result_count = 0;
+    return NULL;
+  }
+  for (unsigned int i = 0; i < count; i++) {
+    result[i] = heap[i].index;
+  }
+
+  free(heap);
   return result;
 }
 
@@ -1416,6 +1459,50 @@ void updateContext(WorkingMemorySystem *system) {
   normalizeVector(system->global_context, CONTEXT_VECTOR_SIZE);
 }
 
+/* Iterative quickselect: rearranges a so a[k] holds the k-th smallest
+ * value (same value a full sort would leave at index k). int indices on
+ * purpose - Hoare partitioning underflows with unsigned arithmetic.
+ */
+static int quickselect_inplace(float *a, int lo, int hi, int k) {
+  while (lo < hi) {
+    float pivot = a[lo + (hi - lo) / 2];
+    int i = lo, j = hi;
+    while (i <= j) {
+      while (a[i] < pivot)
+        i++;
+      while (a[j] > pivot)
+        j--;
+      if (i <= j) {
+        float t = a[i];
+        a[i] = a[j];
+        a[j] = t;
+        i++;
+        j--;
+      }
+    }
+    if (k <= j)
+      hi = j;
+    else if (k >= i)
+      lo = i;
+    else
+      break;
+  }
+  return k;
+}
+
+/* Promotion thresholds derived from the live importance distribution
+ * over the flat ring (system->entries), which holds every entry ever
+ * added regardless of level. computeImportance (mean |v| of a memory
+ * vector) tops out far below the nominal 0.5/0.7 thresholds, so the
+ * fixed thresholds routed every entry into short_term forever and the
+ * hierarchy never consolidated. We promote the upper slice instead:
+ * >= p75 goes medium, >= p95 goes long. The ring is the reference
+ * because short_term is the residue AFTER diversion - deriving the
+ * thresholds from it collapsed p95 toward short_term's own max and
+ * sent every above-average entry straight to long_term. Below 20 ring
+ * entries the distribution is meaningless, so we fall back to the
+ * fixed fields from createMemorySystem.
+ */
 static void promotionThresholds(MemorySystem *system, float *mt_threshold,
                                 float *lt_threshold) {
   int n = (int)system->size;
@@ -1433,17 +1520,10 @@ static void promotionThresholds(MemorySystem *system, float *mt_threshold,
   for (int i = 0; i < n; i++) {
     sorted[i] = system->entries[i].importance;
   }
-  for (int i = 0; i < n - 1; i++) {
-    for (int j = i + 1; j < n; j++) {
-      if (sorted[i] > sorted[j]) {
-        float tmp = sorted[i];
-        sorted[i] = sorted[j];
-        sorted[j] = tmp;
-      }
-    }
-  }
-  *mt_threshold = sorted[(int)(n * 0.75f)];
-  *lt_threshold = sorted[(int)(n * 0.95f)];
+  int mid = (int)(n * 0.75f);
+  int top = (int)(n * 0.95f);
+  *mt_threshold = sorted[quickselect_inplace(sorted, 0, n - 1, mid)];
+  *lt_threshold = sorted[quickselect_inplace(sorted, 0, n - 1, top)];
   free(sorted);
 }
 
@@ -1776,6 +1856,32 @@ MemorySystem *loadMemorySystem(const char *filename) {
     fclose(fp);
     return NULL;
   }
+
+  /* Rebuild the flat ring from the restored tier entries. The ring is
+   * not persisted (saveMemorySystem writes tiers only), so without this
+   * it holds malloc garbage that promotionThresholds, consolidateMemory
+   * and the recent-memory walkers (updateModelFromMemories, scenario
+   * evaluation) read for a long window after every reload. The size/head
+   * values from the file described the old ring, so we overwrite them
+   * with consistent derived ones. Tier capacities sum to exactly
+   * capacity (0.5c + 0.3c + 0.2c), nothing gets truncated.
+   */
+  unsigned int ring_size = 0;
+  unsigned int ring_head = 0;
+  for (int lvl = 0; lvl < 3; lvl++) {
+    MemoryCluster *tier = (lvl == 0)   ? &system->hierarchy.short_term
+                          : (lvl == 1) ? &system->hierarchy.medium_term
+                                       : &system->hierarchy.long_term;
+    for (unsigned int i = 0;
+         i < tier->size && i < tier->capacity && ring_size < system->capacity;
+         i++) {
+      system->entries[ring_head] = tier->entries[i];
+      ring_head = (ring_head + 1) % system->capacity;
+      ring_size++;
+    }
+  }
+  system->size = ring_size;
+  system->head = ring_head;
 
   fclose(fp);
   return system;
@@ -2402,9 +2508,10 @@ void decayMemorySystem(MemorySystem *system) {
     system->hierarchy.medium_term.entries[i].importance *= DECAY_FACTOR;
   }
 
-  // Decay long-term memories slower
+  // Decay long-term memories slower (0.98 > 0.95 so they still drain,
+  // just slower than medium - the old DECAY_FACTOR * 1.1 was growth)
   for (unsigned int i = 0; i < system->hierarchy.long_term.size; i++) {
-    system->hierarchy.long_term.entries[i].importance *= DECAY_FACTOR * 1.1f;
+    system->hierarchy.long_term.entries[i].importance *= 0.98f;
   }
 
   // Remove decayed memories
@@ -4732,7 +4839,8 @@ float evaluateConstraintSatisfaction(ContextNode *constraint, Neuron *neurons,
 }
 
 void updateGlobalContext(GlobalContextManager *manager, Neuron *neurons,
-                         uint32_t num_neurons, float *input_tensor) {
+                         uint32_t num_neurons, float *input_tensor,
+                         uint32_t input_size) {
   if (!manager || !manager->root || !neurons ||
       !manager->global_context_vector || manager->vector_size == 0)
     return;
@@ -4745,7 +4853,8 @@ void updateGlobalContext(GlobalContextManager *manager, Neuron *neurons,
   // Analyze network activity patterns. Blend in the driving input so
   // the context actually reflects what fed the network instead of
   // ignoring input_tensor entirely.
-  for (uint32_t i = 0; i < manager->vector_size && i < num_neurons; i++) {
+  for (uint32_t i = 0;
+       i < manager->vector_size && i < num_neurons && i < input_size; i++) {
     float env_signal = neurons[i].output;
     if (input_tensor) {
       env_signal = 0.5f * neurons[i].output + 0.5f * input_tensor[i];
